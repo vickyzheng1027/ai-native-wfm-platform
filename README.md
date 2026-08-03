@@ -47,7 +47,7 @@ export OPENAI_API_KEY="你的 API Key"
 export OPENAI_MODEL="gpt-5.6-terra"
 ```
 
-没有 `OPENAI_API_KEY` 时，人员、排班、考勤、结算等确定性功能仍可使用；Agent 接口会明确返回 `OPENAI_NOT_CONFIGURED`，不会生成模拟结果。
+没有有效的 `OPENAI_API_KEY` 时，系统自动使用 `deterministic-wfm-v1`：从数据库读取人员和班次，运行统计需求预测与版本化合规规则，再由确定性编排引擎生成可确认方案。页面会明确标注当前模式，不伪装成 OpenAI。配置以 `sk-` 开头的有效 Key 后自动切换为 OpenAI Agent 编排。
 
 演示账号：
 

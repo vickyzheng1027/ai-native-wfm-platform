@@ -2,10 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { createDatabase } from './db.mjs';
-import { confirmEmployeeCommand } from './orchestration.mjs';
+import { confirmEmployeeCommand, createAgentRun, createEmployeeCommand, operationsContext } from './orchestration.mjs';
 
 const employeeUser = {
   id:'user-employee', tenantId:'tenant-demo', tenantCode:'DEMO', role:'employee', employeeId:'emp-linxiao'
+};
+const managerUser = {
+  id:'user-manager', tenantId:'tenant-demo', tenantCode:'DEMO', role:'manager', employeeId:null
 };
 
 function command(db,intent) {
@@ -34,4 +37,37 @@ test('员工偏好确认后保存新版本并停用旧版本',()=>{
   assert.deepEqual(db.prepare('SELECT version,status FROM employee_preferences WHERE employee_id=? ORDER BY version').all(employeeUser.employeeId).map(row=>({...row})),[
     {version:1,status:'superseded'},{version:2,status:'active'}
   ]);
+});
+
+test('只有 Codex 凭证时自动使用确定性编排并生成可确认方案',async()=>{
+  const original=process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY='cpx_not_an_openai_key';
+  try{
+    const db=createDatabase(':memory:');
+    const context=operationsContext(db,managerUser);
+    assert.equal(context.ai.mode,'deterministic');
+    assert.equal(context.ai.model,'deterministic-wfm-v1');
+    const run=await createAgentRun(db,managerUser,{prompt:'会员日覆盖率达到95%，预算不超2000元，全程合规并计入劳动力账户'});
+    assert.equal(run.status,'AWAITING_CONFIRMATION');
+    assert.equal(run.model,'deterministic-wfm-v1');
+    assert.equal(run.plan.option.checks.every(check=>check.passed),true);
+    assert.ok(db.prepare("SELECT COUNT(*) AS count FROM agent_steps WHERE run_id=? AND tool_name='run_demand_forecast'").get(run.id).count>0);
+  }finally{
+    if(original===undefined)delete process.env.OPENAI_API_KEY;else process.env.OPENAI_API_KEY=original;
+  }
+});
+
+test('无 OpenAI Key 时员工自然语言由确定性引擎解析',async()=>{
+  const original=process.env.OPENAI_API_KEY;
+  delete process.env.OPENAI_API_KEY;
+  try{
+    const db=createDatabase(':memory:');
+    const command=await createEmployeeCommand(db,employeeUser,'看看我这周的排班');
+    assert.equal(command.model,'deterministic-wfm-v1');
+    assert.equal(command.intent.action,'query_schedule');
+    assert.equal(command.status,'completed');
+    assert.ok(command.result.schedules.length>0);
+  }finally{
+    if(original!==undefined)process.env.OPENAI_API_KEY=original;
+  }
 });

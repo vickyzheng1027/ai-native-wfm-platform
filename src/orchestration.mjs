@@ -2,9 +2,11 @@ import { randomUUID } from 'node:crypto';
 import { dashboard, generatePlan, executePlan, listShifts, createRequest, punch } from './domain.mjs';
 import { forecastDemand, latestForecast } from './forecast.mjs';
 import { runWorkforceAgent, interpretEmployeeCommand, DEFAULT_MODEL } from './openai-agent.mjs';
-import { WFM_MODULES } from './ai-native-engine.mjs';
+import { WFM_MODULES, parseManagementIntent, parseEmployeeIntent } from './ai-native-engine.mjs';
 
 const now = () => new Date().toISOString();
+const FALLBACK_MODEL = 'deterministic-wfm-v1';
+const hasOpenAIKey = () => /^sk-/.test(String(process.env.OPENAI_API_KEY || ''));
 
 function requireManager(user) {
   if (!['manager','admin'].includes(user.role)) throw Object.assign(new Error('当前角色无权执行此操作'),{status:403,code:'FORBIDDEN'});
@@ -23,7 +25,8 @@ export function operationsContext(db,user,eventId='event-member-day') {
     FROM agent_runs WHERE tenant_id=? AND event_id=? ORDER BY created_at DESC LIMIT 1`).get(user.tenantId,eventId) || null;
   const rules = db.prepare(`SELECT rule_code AS ruleCode,source,severity,version,effective_from AS effectiveFrom,is_demo_rule AS isDemoRule
     FROM compliance_rules WHERE tenant_id=? AND status='active' ORDER BY rule_code`).all(user.tenantId);
-  return { ...data, requests, latestRun, forecast:latestForecast(db,user,eventId), rules, modules:WFM_MODULES, ai:{ configured:Boolean(process.env.OPENAI_API_KEY), model:DEFAULT_MODEL } };
+  const configured=hasOpenAIKey();
+  return { ...data, requests, latestRun, forecast:latestForecast(db,user,eventId), rules, modules:WFM_MODULES, ai:{ configured, mode:configured?'openai':'deterministic', model:configured?DEFAULT_MODEL:FALLBACK_MODEL } };
 }
 
 function workforceToolContext(db,user,eventId) {
@@ -45,8 +48,9 @@ export async function createAgentRun(db,user,{prompt,eventId='event-member-day'}
   requireManager(user);
   if (String(prompt || '').trim().length < 8) throw Object.assign(new Error('经营目标描述过短'),{status:400,code:'INVALID_PROMPT'});
   const runId = randomUUID();
+  const model=hasOpenAIKey()?DEFAULT_MODEL:FALLBACK_MODEL;
   db.prepare(`INSERT INTO agent_runs(id,tenant_id,user_id,event_id,prompt,model,status,created_at) VALUES(?,?,?,?,?,?,?,?)`)
-    .run(runId,user.tenantId,user.id,eventId,prompt.trim(),DEFAULT_MODEL,'UNDERSTANDING',now());
+    .run(runId,user.tenantId,user.id,eventId,prompt.trim(),model,'UNDERSTANDING',now());
   let sequence = 0;
   const recordStep = ({state,toolName=null,input={},output=null,durationMs=0,status='completed'}) => {
     sequence += 1;
@@ -56,7 +60,8 @@ export async function createAgentRun(db,user,{prompt,eventId='event-member-day'}
   };
   try {
     recordStep({state:'UNDERSTANDING',input:{prompt}});
-    const agent = await runWorkforceAgent({
+    let agent;
+    if(hasOpenAIKey()) agent = await runWorkforceAgent({
       prompt,eventId,safetyIdentifier:`tenant_${user.tenantId}_user_${user.id}`,
       tools:{
         get_workforce_context:async () => workforceToolContext(db,user,eventId),
@@ -66,6 +71,17 @@ export async function createAgentRun(db,user,{prompt,eventId='event-member-day'}
       },
       onStep:async step => recordStep({state:step.toolName === 'run_demand_forecast' ? 'GENERATING_OPTIONS' : 'COLLECTING_CONTEXT',...step})
     });
+    else {
+      const started=Date.now();
+      const context=workforceToolContext(db,user,eventId);
+      recordStep({state:'COLLECTING_CONTEXT',toolName:'get_workforce_context',output:context,durationMs:Date.now()-started});
+      const forecastStarted=Date.now();
+      const forecast=forecastDemand(db,user,eventId);
+      recordStep({state:'GENERATING_OPTIONS',toolName:'run_demand_forecast',output:forecast,durationMs:Date.now()-forecastStarted});
+      const rules=db.prepare(`SELECT rule_code AS ruleCode,expression_json AS expression,source,severity,version FROM compliance_rules WHERE tenant_id=? AND status='active'`).all(user.tenantId).map(row=>({...row,expression:JSON.parse(row.expression)}));
+      recordStep({state:'COLLECTING_CONTEXT',toolName:'get_compliance_rules',output:rules});
+      agent={model:FALLBACK_MODEL,responseId:null,intent:{...parseManagementIntent(prompt),eventId,summary:'由数据库上下文、统计预测和确定性规则引擎生成',rationale:['历史需求预测','实时人员与班次','版本化合规规则']}};
+    }
     recordStep({state:'CHECKING_COMPLIANCE',output:{intent:agent.intent}});
     const plan = generatePlan(db,user,prompt,eventId);
     recordStep({state:'SIMULATING_IMPACT',output:{planId:plan.id,alternatives:plan.alternatives}});
@@ -108,13 +124,32 @@ export async function createEmployeeCommand(db,user,text) {
   if(user.role!=='employee')throw Object.assign(new Error('仅员工账号可使用员工伙伴'),{status:403,code:'FORBIDDEN'});
   if(String(text||'').trim().length<2)throw Object.assign(new Error('请输入具体诉求'),{status:400,code:'INVALID_COMMAND'});
   const schedules=listShifts(db,user);
-  const ai=await interpretEmployeeCommand({text:text.trim(),context:schedules,safetyIdentifier:`tenant_${user.tenantId}_employee_${user.employeeId}`});
+  const ai=hasOpenAIKey()?await interpretEmployeeCommand({text:text.trim(),context:schedules,safetyIdentifier:`tenant_${user.tenantId}_employee_${user.employeeId}`}):deterministicEmployeeCommand(text.trim(),schedules);
   const id=randomUUID();
   const immediate=ai.intent.action==='query_schedule'?{schedules}:null;
   const status=ai.intent.requiresConfirmation?'awaiting_confirmation':'completed';
   db.prepare(`INSERT INTO employee_commands(id,tenant_id,user_id,employee_id,raw_text,model,intent_json,status,result_json,created_at)
     VALUES(?,?,?,?,?,?,?,?,?,?)`).run(id,user.tenantId,user.id,user.employeeId,text.trim(),ai.model,JSON.stringify(ai.intent),status,immediate?JSON.stringify(immediate):null,now());
   return {id,status,model:ai.model,intent:ai.intent,result:immediate};
+}
+
+function deterministicEmployeeCommand(text,schedules){
+  const parsed=parseEmployeeIntent(text);
+  const hoursMatch=text.match(/(\d+(?:\.\d+)?)\s*(?:小时|h)/i);
+  let requestDate=null;
+  if(parsed.dayOfWeek!=null){
+    const base=new Date();
+    const delta=(parsed.dayOfWeek-base.getDay()+7)%7 || 7;
+    base.setDate(base.getDate()+delta);
+    requestDate=base.toISOString().slice(0,10);
+  }
+  if(parsed.action==='swap'&&!requestDate)requestDate=schedules.find(shift=>['planned','confirmed'].includes(shift.status))?.shiftDate||null;
+  const hours=hoursMatch?Number(hoursMatch[1]):parsed.action==='leave'?8:parsed.action==='overtime'?2:parsed.action==='attendance_correction'?1:null;
+  return {model:FALLBACK_MODEL,responseId:null,intent:{
+    action:parsed.action,requestDate,startAt:null,endAt:null,hours,reason:parsed.reason||text,
+    punchType:parsed.action==='punch'?parsed.punchType:null,summary:text,
+    requiresConfirmation:!['query_schedule','unknown'].includes(parsed.action)
+  }};
 }
 
 export function confirmEmployeeCommand(db,user,id) {

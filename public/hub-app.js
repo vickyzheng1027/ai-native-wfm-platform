@@ -62,7 +62,8 @@ function fillGoal(){$('goalInput').value=GOAL}
 
 async function generate(){
   var prompt=$('goalInput').value.trim();if(!prompt||hub.busy)return;
-  hub.busy=true;$('genBtn').disabled=true;$('aiStateBox').style.display='block';$('plans').innerHTML='';$('canvas').innerHTML='<div class="task"><div class="ti">AI</div><div class="tc"><b>正在运行真实 Agent</b><div class="tool">OpenAI Responses API · '+esc(hub.context.ai.model)+'</div><div>读取数据库上下文并运行统计预测，通常需要数秒。</div></div><div class="st">…</div></div>';
+  var engineLabel=hub.context.ai.mode==='openai'?'OpenAI Responses API':'规则 + 统计预测引擎';
+  hub.busy=true;$('genBtn').disabled=true;$('aiStateBox').style.display='block';$('plans').innerHTML='';$('canvas').innerHTML='<div class="task"><div class="ti">AI</div><div class="tc"><b>正在运行劳动力编排</b><div class="tool">'+engineLabel+' · '+esc(hub.context.ai.model)+'</div><div>读取数据库上下文并运行统计预测，通常需要数秒。</div></div><div class="st">…</div></div>';
   $('aiNow').textContent='RUNNING';
   try{
     hub.run=await api('/api/agent/runs',{method:'POST',body:{prompt:prompt,eventId:'event-member-day'}});
