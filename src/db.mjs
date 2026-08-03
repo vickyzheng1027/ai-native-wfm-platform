@@ -90,7 +90,8 @@ function migrate(db) {
     );
     CREATE TABLE IF NOT EXISTS workforce_plans (
       id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, event_id TEXT NOT NULL, prompt TEXT NOT NULL,
-      intent_json TEXT NOT NULL, option_json TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'proposed',
+      intent_json TEXT NOT NULL, option_json TEXT NOT NULL, alternatives_json TEXT, state_trace_json TEXT,
+      modules_json TEXT, status TEXT NOT NULL DEFAULT 'proposed',
       created_by TEXT NOT NULL, confirmed_by TEXT, created_at TEXT NOT NULL, confirmed_at TEXT,
       FOREIGN KEY(event_id) REFERENCES events(id), FOREIGN KEY(created_by) REFERENCES users(id)
     );
@@ -131,6 +132,10 @@ function migrate(db) {
     CREATE INDEX IF NOT EXISTS idx_attendance_employee ON attendance_events(employee_id, occurred_at);
     CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(tenant_id, created_at DESC);
   `);
+  const planColumns = new Set(db.prepare('PRAGMA table_info(workforce_plans)').all().map(column => column.name));
+  if (!planColumns.has('alternatives_json')) db.exec('ALTER TABLE workforce_plans ADD COLUMN alternatives_json TEXT');
+  if (!planColumns.has('state_trace_json')) db.exec('ALTER TABLE workforce_plans ADD COLUMN state_trace_json TEXT');
+  if (!planColumns.has('modules_json')) db.exec('ALTER TABLE workforce_plans ADD COLUMN modules_json TEXT');
 }
 
 function seed(db) {

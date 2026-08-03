@@ -1,5 +1,9 @@
 import { randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
 import { withTransaction } from './db.mjs';
+import {
+  WFM_MODULES, parseManagementIntent, createScenario, generateCandidatePlans,
+  buildStateTrace, computeEfficiency, buildThreeLayerFeedback, parseEmployeeIntent
+} from './ai-native-engine.mjs';
 
 export class DomainError extends Error {
   constructor(message, status = 400, code = 'BUSINESS_RULE') {
@@ -244,10 +248,22 @@ export function punch(db, user, input) {
   return { id, shiftId: shift.id, occurredAt };
 }
 
-function parseGoal(prompt) {
-  const traffic = prompt.match(/(?:增长|增加)\s*(\d{1,3})\s*%/);
-  const budget = prompt.match(/(?:预算|不超)[^\d]{0,8}(\d{3,7})/);
-  return { trafficIncreasePct: traffic ? Number(traffic[1]) : 35, budgetCeiling: budget ? Number(budget[1]) : 2000, minimumCoveragePct: 95, complianceRequired: true };
+export function understandEmployeeCommand(db, user, text) {
+  requireRole(user, 'employee');
+  const intent = parseEmployeeIntent(text);
+  const context = intent.action === 'query_schedule' ? listShifts(db, user) : [];
+  writeAudit(db, user.tenantId, user.id, 'employee.intent_understood', 'employee', user.employeeId, { intent });
+  return {
+    intent,
+    context,
+    nextAction:{
+      leave:'create_leave_request', overtime:'create_overtime_request',
+      attendance_correction:'create_attendance_correction_request', swap:'find_compliant_replacement',
+      punch:'create_attendance_event', preference:'update_employee_preference',
+      query_schedule:'return_schedule'
+    }[intent.action] || 'request_clarification',
+    requiresConfirmation:!['query_schedule','unknown'].includes(intent.action)
+  };
 }
 
 export function generatePlan(db, user, prompt, eventId = 'event-member-day') {
@@ -261,7 +277,18 @@ export function generatePlan(db, user, prompt, eventId = 'event-member-day') {
     FROM employees e JOIN stores s ON s.id=e.store_id WHERE e.tenant_id=? AND e.store_id!=? AND e.available_for_support=1 AND e.status='active'
     AND NOT EXISTS(SELECT 1 FROM shifts sh WHERE sh.employee_id=e.id AND sh.shift_date=? AND sh.status!='cancelled')
     ORDER BY e.hourly_rate ASC`).all(user.tenantId, event.store_id, event.event_date).map(row => ({ ...row, skills: JSON.parse(row.skills_json) }));
-  const goals = parseGoal(prompt);
+  const goals = parseManagementIntent(prompt);
+  const homeRates = db.prepare("SELECT hourly_rate FROM employees WHERE tenant_id=? AND store_id=? AND status='active'").all(user.tenantId, event.store_id);
+  const average = rows => rows.length ? rows.reduce((sum,row) => sum + row.hourly_rate, 0) / rows.length : 0;
+  const scenario = createScenario({
+    eventId:event.id, eventName:event.name, eventDate:event.event_date,
+    requiredHeadcount:event.required_headcount, currentHeadcount:currentShifts,
+    budgetRemaining:event.budget - event.spent, laborAccountId:event.labor_account_id,
+    averageHourlyRate:average(homeRates), averageSupportRate:average(candidates)
+  }, goals);
+  const alternatives = generateCandidatePlans(scenario);
+  const recommended = alternatives.find(plan => plan.recommended) || alternatives.find(plan => plan.compliance.passed);
+  if (!recommended) throw new DomainError('没有可通过硬性合规规则的候选方案', 409, 'NO_COMPLIANT_PLAN');
   const supportHours = 4;
   const budgetAllowed = Math.min(event.budget - event.spent, goals.budgetCeiling);
   const chosen = [];
@@ -275,21 +302,24 @@ export function generatePlan(db, user, prompt, eventId = 'event-member-day') {
   }
   const cost = candidateCost;
   const budgetRemaining = event.budget - event.spent;
+  const projectedCoverage = Math.min(100,Math.round((currentShifts+chosen.length)/event.required_headcount*100));
   const checks = [
     { code:'BUDGET',name:'活动预算',passed:cost <= budgetRemaining,evidence:`新增成本 ¥${cost.toFixed(0)}，可用预算 ¥${budgetRemaining.toFixed(0)}` },
     { code:'SKILL',name:'技能匹配',passed:chosen.every(item => item.skills.length > 0),evidence:`${chosen.length} 名候选人均有有效技能` },
     { code:'SHIFT_CONFLICT',name:'班次冲突',passed:true,evidence:'候选人当日无其他有效班次' },
     { code:'WORK_HOURS',name:'单日工时',passed:supportHours <= 10,evidence:`支援班次 ${supportHours}h，阈值 10h` },
+    { code:'COVERAGE_TARGET',name:'覆盖率目标',passed:projectedCoverage >= goals.minimumCoveragePct,evidence:`预计覆盖率 ${projectedCoverage}%，目标 ${goals.minimumCoveragePct}%` },
     { code:'CONSENT',name:'员工授权',passed:true,evidence:'执行后进入员工确认队列' }
   ];
-  const intent = { action:'optimize_event_workforce', eventId, goals, observed:{ currentShifts, required:event.required_headcount, gap }, source:process.env.OPENAI_API_KEY ? 'model-assisted' : 'rule-engine' };
-  const option = { id:'option-support', name:'跨店技能支援', candidates:chosen.map(item => ({ id:item.id,name:item.name,store:item.store_name,position:item.position,hourlyRate:item.hourly_rate })), addedHeadcount:chosen.length, coverage:Math.min(100,Math.round((currentShifts+chosen.length)/event.required_headcount*100)), cost, checks, accountId:event.labor_account_id };
+  const intent = { ...goals, eventId, observed:{ currentShifts, required:event.required_headcount, gap }, source:process.env.OPENAI_API_KEY ? 'model-assisted' : 'deterministic-domain-engine' };
+  const option = { id:recommended.id, name:recommended.name, actions:recommended.actions, candidates:chosen.map(item => ({ id:item.id,name:item.name,store:item.store_name,position:item.position,hourlyRate:item.hourly_rate })), addedHeadcount:chosen.length, coverage:projectedCoverage, cost, checks, accountId:event.labor_account_id };
   const planId = randomUUID();
-  db.prepare(`INSERT INTO workforce_plans(id,tenant_id,event_id,prompt,intent_json,option_json,status,created_by,created_at)
-    VALUES(?,?,?,?,?,?,'proposed',?,?)`).run(planId, user.tenantId, eventId, prompt.trim(), JSON.stringify(intent), JSON.stringify(option), user.id, now());
+  const stateTrace = buildStateTrace();
+  db.prepare(`INSERT INTO workforce_plans(id,tenant_id,event_id,prompt,intent_json,option_json,alternatives_json,state_trace_json,modules_json,status,created_by,created_at)
+    VALUES(?,?,?,?,?,?,?,?,?,'proposed',?,?)`).run(planId, user.tenantId, eventId, prompt.trim(), JSON.stringify(intent), JSON.stringify(option), JSON.stringify(alternatives), JSON.stringify(stateTrace), JSON.stringify(WFM_MODULES), user.id, now());
   runCompliance(db, user, 'workforce_plan', planId, checks);
   writeAudit(db, user.tenantId, user.id, 'plan.generated', 'workforce_plan', planId, { gap, candidates:chosen.length, cost });
-  return { id:planId, intent, option };
+  return { id:planId, intent, option, alternatives, stateTrace, modules:WFM_MODULES };
 }
 
 export function executePlan(db, user, planId) {
@@ -354,16 +384,19 @@ export function closeEvent(db, user, eventId, outcomes = {}) {
       processed += 1;
     }
     db.prepare("UPDATE labor_accounts SET spent=? WHERE id=?").run(totalCost, event.labor_account_id);
-    db.prepare("UPDATE events SET status='closed',actual_traffic=?,actual_sales=? WHERE id=?").run(Number(outcomes.actualTraffic || 1380), Number(outcomes.actualSales || 171500), eventId);
+    const actualTraffic = Number(outcomes.actualTraffic || 1380);
+    const actualSales = Number(outcomes.actualSales || 171500);
+    db.prepare("UPDATE events SET status='closed',actual_traffic=?,actual_sales=? WHERE id=?").run(actualTraffic, actualSales, eventId);
     if (!db.prepare('SELECT 1 FROM feedback_metrics WHERE event_id=?').get(eventId)) {
       const insertFeedback = db.prepare(`INSERT INTO feedback_metrics(id,tenant_id,event_id,metric_type,metric_key,before_value,after_value,evidence,created_at)
         VALUES(?,?,?,?,?,?,?,?,?)`);
-      insertFeedback.run(randomUUID(),user.tenantId,eventId,'business','traffic_factor',1.28,1.34,'实际客流高于预测 2.2%',now());
-      insertFeedback.run(randomUUID(),user.tenantId,eventId,'employee','support_reliability',82,88,'跨店支援班次完成',now());
-      insertFeedback.run(randomUUID(),user.tenantId,eventId,'strategy','voluntary_support_weight',0.60,0.72,'管理者采纳跨店支援方案',now());
+      buildThreeLayerFeedback({ plannedTraffic:event.forecast_traffic, actualTraffic }).forEach(metric => {
+        insertFeedback.run(randomUUID(),user.tenantId,eventId,metric.type,metric.key,metric.before,metric.after,metric.evidence,now());
+      });
     }
-    writeAudit(db, user.tenantId, user.id, 'event.closed', 'event', eventId, { processed,totalHours,totalCost });
-    return { processed, totalHours:Number(totalHours.toFixed(2)), totalCost:Number(totalCost.toFixed(2)) };
+    const efficiency = computeEfficiency({ actualSales, baselineSales:event.forecast_sales, totalHours, laborCost:totalCost, coveragePct:Math.min(100, Math.round(shifts.length / event.required_headcount * 100)) });
+    writeAudit(db, user.tenantId, user.id, 'event.closed', 'event', eventId, { processed,totalHours,totalCost,efficiency });
+    return { processed, totalHours:Number(totalHours.toFixed(2)), totalCost:Number(totalCost.toFixed(2)), efficiency };
   });
 }
 

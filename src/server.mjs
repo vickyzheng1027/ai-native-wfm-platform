@@ -7,7 +7,7 @@ import { createDatabase } from './db.mjs';
 import {
   DomainError, login, logout, authenticate, dashboard, listEmployees, createEmployee, updateEmployee,
   listStores, listShifts, createShift, createRequest, listRequests, decideRequest, punch,
-  generatePlan, executePlan, closeEvent, accountReport, payrollReport, auditReport
+  generatePlan, executePlan, closeEvent, accountReport, payrollReport, auditReport, understandEmployeeCommand
 } from './domain.mjs';
 
 const rootDir = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -95,6 +95,10 @@ async function api(req, res, pathname, url) {
     return sendJson(res, 200, { ok:true, data:decideRequest(db,user,params.id,body.decision,body.note) });
   }
   if (req.method === 'POST' && pathname === '/api/attendance/punch') return sendJson(res, 201, { ok:true, data:punch(db,user,await readJson(req)) });
+  if (req.method === 'POST' && pathname === '/api/ai/employee-intent') {
+    const body = await readJson(req);
+    return sendJson(res, 200, { ok:true, data:understandEmployeeCommand(db,user,String(body.text || '')) });
+  }
   if (req.method === 'POST' && pathname === '/api/ai/plans') {
     const body = await readJson(req);
     return sendJson(res, 201, { ok:true, data:generatePlan(db,user,String(body.prompt || ''),body.eventId) });

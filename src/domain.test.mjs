@@ -5,7 +5,7 @@ import {
   login, authenticate, listEmployees, createEmployee, updateEmployee,
   createRequest, listRequests, decideRequest, generatePlan, executePlan,
   listShifts, punch, closeEvent, accountReport, payrollReport, auditReport,
-  DomainError
+  understandEmployeeCommand, DomainError
 } from './domain.mjs';
 
 function setup() {
@@ -56,10 +56,26 @@ test('AI 提案经合规校验和人工确认后创建真实班次', () => {
   assert.equal(plan.option.coverage, 100);
   assert.ok(plan.option.cost <= 2000);
   assert.equal(plan.option.checks.every(check => check.passed), true);
+  assert.equal(plan.alternatives.length, 3);
+  assert.equal(plan.modules.length, 9);
+  assert.equal(plan.stateTrace.at(-1).state, 'AWAITING_CONFIRMATION');
+  const stored = db.prepare('SELECT alternatives_json,state_trace_json,modules_json FROM workforce_plans WHERE id=?').get(plan.id);
+  assert.equal(JSON.parse(stored.alternatives_json).length, 3);
   const result = executePlan(db, manager, plan.id);
   assert.equal(result.addedShifts, 4);
   assert.equal(listShifts(db, manager).length, 8);
   assert.equal(db.prepare('SELECT status FROM workforce_plans WHERE id=?').get(plan.id).status, 'executed');
+});
+
+test('员工自然语言在后端结合本人排班生成下一步动作', () => {
+  const { db, employee } = setup();
+  const query = understandEmployeeCommand(db, employee, '帮我看看本周排班');
+  assert.equal(query.intent.action, 'query_schedule');
+  assert.equal(query.nextAction, 'return_schedule');
+  assert.ok(query.context.length > 0);
+  const correction = understandEmployeeCommand(db, employee, '昨天忘记打下班卡，帮我补卡');
+  assert.equal(correction.nextAction, 'create_attendance_correction_request');
+  assert.equal(correction.requiresConfirmation, true);
 });
 
 test('打卡、工时结算、工时银行、账户分摊、薪资和数据反哺端到端可计算', () => {
