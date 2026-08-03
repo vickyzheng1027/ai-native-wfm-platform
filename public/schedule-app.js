@@ -14,4 +14,4 @@ function simulateLeave(){addMessage('ai','员工请假必须从员工端真实�
 function runReview(){gotoAfter();}
 function gotoAfter(){location.href='operations-hub.html'}
 function toggleDegrade(){state.aiEnabled=!state.aiEnabled;$('degradeBanner').className='degrade-banner'+(state.aiEnabled?'':' show');$('degradeBtn').textContent=state.aiEnabled?'关闭 AI Agent':'恢复 AI Agent'}
-window.addEventListener('DOMContentLoaded',function(){load();$('input').addEventListener('keydown',function(event){if((event.metaKey||event.ctrlKey)&&event.key==='Enter')onSend()})});
+window.addEventListener('DOMContentLoaded',function(){document.addEventListener('click',function(event){var target=event.target.closest('[data-action]');if(!target||target.disabled)return;({ 'toggle-agent':toggleDegrade,'fill-demo':fillDemo,'simulate-leave':simulateLeave,review:runReview,send:onSend,dispatch:dispatch }[target.dataset.action]||function(){})()});load();$('input').addEventListener('keydown',function(event){if((event.metaKey||event.ctrlKey)&&event.key==='Enter')onSend()})});

@@ -44,7 +44,7 @@ async function loadContext(){
 }
 function renderPhases(){
   var phases=[['活动前','预测 · 方案 · 确认'],['活动中','执行 · 考勤 · 异常'],['活动后','结算 · 复盘 · 进化']];
-  $('phases').innerHTML=phases.map(function(item,index){return '<div class="phase '+(index===hub.phase?'active':index<hub.phase?'done':'')+'" onclick="gotoPhase('+index+')"><div class="pn">'+(index+1)+'</div><div class="pt"><b>'+item[0]+'</b><span>'+item[1]+'</span></div></div>'}).join('');
+  $('phases').innerHTML=phases.map(function(item,index){return '<button type="button" class="phase '+(index===hub.phase?'active':index<hub.phase?'done':'')+'" data-phase="'+index+'"><div class="pn">'+(index+1)+'</div><div class="pt"><b>'+item[0]+'</b><span>'+item[1]+'</span></div></button>'}).join('');
 }
 function renderModules(){
   $('modules').innerHTML=hub.context.modules.map(function(module){return '<div class="mod"><span class="md"></span>'+esc(module.name)+'<small>API</small></div>'}).join('');
@@ -77,7 +77,7 @@ function renderSteps(steps){
   $('canvas').innerHTML=steps.map(function(step){return '<div class="task '+(step.status==='failed'?'risk':'')+'"><div class="ti">'+(step.toolName?'T':'AI')+'</div><div class="tc"><b>'+esc(step.state)+'</b><div class="tool">'+esc(step.toolName||'agent_state')+'</div><div>'+(step.toolName?'真实工具耗时 '+step.durationMs+'ms':'状态已持久化')+'</div></div><div class="st">'+(step.status==='failed'?'!':'✓')+'</div></div>'}).join('');
 }
 function renderPlans(plans){
-  $('plans').innerHTML=plans.map(function(plan){var impact=plan.impact,comp=plan.compliance;return '<div class="plan '+(plan.recommended?'rec':'')+'" onclick="pickPlan(\''+plan.id+'\')">'+(plan.recommended?'<div class="rec-tag">AI 推荐</div>':'')+'<h4>'+esc(plan.name)+'</h4><div class="row"><span>覆盖率</span><b>'+impact.coverageBefore+'% → '+impact.coverageAfter+'%</b></div><div class="row"><span>新增成本</span><b>'+money(impact.addedCost)+'</b></div><div class="row"><span>预算余量</span><b>'+money(impact.budgetRemaining)+'</b></div><div class="row"><span>影响员工</span><b>'+impact.affectedEmployees+' 人</b></div><div class="comp '+(comp.passed?'ok':'no')+'">'+(comp.passed?'合规计算通过':'硬规则拦截')+'</div></div>'}).join('');
+  $('plans').innerHTML=plans.map(function(plan){var impact=plan.impact,comp=plan.compliance;return '<button type="button" class="plan '+(plan.recommended?'rec':'')+'" data-plan-id="'+esc(plan.id)+'">'+(plan.recommended?'<div class="rec-tag">AI 推荐</div>':'')+'<h4>'+esc(plan.name)+'</h4><div class="row"><span>覆盖率</span><b>'+impact.coverageBefore+'% → '+impact.coverageAfter+'%</b></div><div class="row"><span>新增成本</span><b>'+money(impact.addedCost)+'</b></div><div class="row"><span>预算余量</span><b>'+money(impact.budgetRemaining)+'</b></div><div class="row"><span>影响员工</span><b>'+impact.affectedEmployees+' 人</b></div><div class="comp '+(comp.passed?'ok':'no')+'">'+(comp.passed?'合规计算通过':'硬规则拦截')+'</div></button>'}).join('');
 }
 function pickPlan(id){
   if(!hub.run)return;var plan=hub.run.plan.alternatives.find(function(item){return item.id===id});if(!plan||!plan.compliance.passed)return;
@@ -99,9 +99,15 @@ function renderDuring(){
 }
 function renderAfter(){
   var feedback=hub.context.feedback||[];
-  $('afterBody').innerHTML='<div class="mini-card"><b>活动结算与复盘</b><br>填写实际经营结果，系统将结合数据库考勤计算工时、账户、薪资和人效。<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px"><label>实际客流<br><input id="actualTraffic" type="number" min="0" step="1" placeholder="例如 1420" style="padding:8px;border:1px solid #cbd5e1;border-radius:4px"></label><label>实际销售额<br><input id="actualSales" type="number" min="0" step="0.01" placeholder="例如 180000" style="padding:8px;border:1px solid #cbd5e1;border-radius:4px"></label></div><button class="btn btn-primary" style="margin-top:10px" onclick="closeAndReview()">确认并执行结算</button></div>';
+  $('afterBody').innerHTML='<div class="mini-card"><b>活动结算与复盘</b><br>填写实际经营结果，系统将结合数据库考勤计算工时、账户、薪资和人效。<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px"><label>实际客流<br><input id="actualTraffic" type="number" min="0" step="1" placeholder="例如 1420" style="padding:8px;border:1px solid #cbd5e1;border-radius:4px"></label><label>实际销售额<br><input id="actualSales" type="number" min="0" step="0.01" placeholder="例如 180000" style="padding:8px;border:1px solid #cbd5e1;border-radius:4px"></label></div><button type="button" class="btn btn-primary" style="margin-top:10px" data-action="close-event">确认并执行结算</button></div>';
   $('fbLbl').style.display='block';$('fbWrap').innerHTML=feedback.length?feedback.map(function(item){return '<div class="fb-card"><b>'+esc(item.metric_key)+'</b><div>'+item.before_value+' → '+item.after_value+'</div><small>'+esc(item.evidence)+'</small></div>'}).join(''):'<div class="empty">尚未产生可信反哺记录</div>';
 }
 async function closeAndReview(){var traffic=Number($('actualTraffic').value);var sales=Number($('actualSales').value);if(!Number.isFinite(traffic)||traffic<0||!Number.isFinite(sales)||sales<0){alert('请填写有效的实际客流和实际销售额');return}if(!window.confirm('确认以客流 '+traffic+'、销售额 '+money(sales)+' 结算？结算后将生成工时、成本、薪资和反哺数据。'))return;try{var result=await api('/api/events/event-member-day/close',{method:'POST',body:{actualTraffic:traffic,actualSales:sales}});alert('结算完成：'+result.processed+'个班次，'+result.totalHours+'小时，成本'+money(result.totalCost));await loadContext();renderAfter()}catch(error){showError(error)}}
 async function resetDemo(){if(!window.confirm('确认清空演示租户的业务执行数据并恢复初始班次？该操作会写入审计日志。'))return;try{await api('/api/admin/demo-reset',{method:'POST'});hub.run=null;hub.chosen=null;hub.phase=0;$('plans').innerHTML='';$('canvas').innerHTML='';$('aiStateBox').style.display='none';$('resultCard').className='result-card';$('confirmBar').style.display='none';await loadContext()}catch(error){showError(error)}}
-document.addEventListener('DOMContentLoaded',init);
+function handleClick(event){
+  var phase=event.target.closest('[data-phase]');if(phase){gotoPhase(Number(phase.dataset.phase));return}
+  var plan=event.target.closest('[data-plan-id]');if(plan){pickPlan(plan.dataset.planId);return}
+  var action=event.target.closest('[data-action]');if(!action)return;
+  ({reset:resetDemo,schedule:function(){location.href='schedule.html'},employee:function(){location.href='employee.html'},'fill-goal':fillGoal,generate:generate,'confirm-plan':confirmPlan,'close-event':closeAndReview}[action.dataset.action]||function(){})();
+}
+document.addEventListener('DOMContentLoaded',function(){document.addEventListener('click',handleClick);init()});

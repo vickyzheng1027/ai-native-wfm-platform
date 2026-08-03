@@ -122,7 +122,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei
     <div class="title">AI Native 劳动力管理系统</div>
     <div class="badge">MVP V1.0</div>
     <div class="right">
-      <div class="degrade" id="degradeBtn" onclick="toggleDegrade()">关闭 AI Agent</div>
+      <button type="button" class="degrade" id="degradeBtn" data-action="toggle-agent">关闭 AI Agent</button>
     </div>
   </div>
 
@@ -145,13 +145,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei
       <div class="stream" id="stream"></div>
       <div class="composer">
         <div class="chips" id="quickChips">
-          <div class="chip-btn" onclick="fillDemo()">📋 示例目标</div>
-          <div class="chip-btn" onclick="simulateLeave()">员工端提交请假</div>
-          <div class="chip-btn" onclick="runReview()">🔁 执行偏差复盘迭代</div>
+          <button type="button" class="chip-btn" data-action="fill-demo">📋 示例目标</button>
+          <button type="button" class="chip-btn" data-action="simulate-leave">员工端提交请假</button>
+          <button type="button" class="chip-btn" data-action="review">🔁 执行偏差复盘迭代</button>
         </div>
         <div class="input-row">
           <textarea id="input" placeholder="例：为A门店生成下周排班，人力成本比上周下降5%，周末覆盖率不低于95%，尽量满足小王周末休息"></textarea>
-          <button class="send" id="sendBtn" onclick="onSend()">➤</button>
+          <button type="button" class="send" id="sendBtn" data-action="send">➤</button>
         </div>
       </div>
     </div>
@@ -181,9 +181,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei
       <div class="block">
         <h4>🔧 执行与事件</h4>
         <div class="actions">
-          <button class="act-btn" id="btnDispatch" onclick="dispatch()" disabled><b>📲 下发 & 通知到岗</b><span>推送排班、采集考勤</span></button>
-          <button class="act-btn" id="btnLeave" onclick="simulateLeave()" disabled><b>🤒 员工临时请假</b><span>自动触发动态自愈调班</span></button>
-          <button class="act-btn" id="btnReview" onclick="runReview()" disabled><b>🔁 偏差复盘迭代</b><span>回流修正下周期预测</span></button>
+          <button class="act-btn" id="btnDispatch" data-action="dispatch" disabled><b>📲 下发 & 通知到岗</b><span>推送排班、采集考勤</span></button>
+          <button class="act-btn" id="btnLeave" data-action="simulate-leave" disabled><b>🤒 员工临时请假</b><span>自动触发动态自愈调班</span></button>
+          <button class="act-btn" id="btnReview" data-action="review" disabled><b>🔁 偏差复盘迭代</b><span>回流修正下周期预测</span></button>
         </div>
         <div id="eventLog"></div>
       </div>

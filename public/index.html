@@ -38,7 +38,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei
 .sec-lbl{font-size:11px;color:var(--ink-3);font-weight:700;letter-spacing:1px;margin:6px 0 8px;text-transform:uppercase;}
 
 /* phases */
-.phase{display:flex;gap:10px;padding:10px;border-radius:10px;margin-bottom:8px;cursor:pointer;border:1px solid var(--line);transition:.2s;position:relative;}
+.phase{display:flex;width:100%;gap:10px;padding:10px;border-radius:10px;margin-bottom:8px;cursor:pointer;border:1px solid var(--line);transition:.2s;position:relative;background:#fff;color:inherit;text-align:left;font:inherit;}
 .phase:hover{border-color:var(--primary);}
 .phase.active{background:var(--ok-bg);border-color:var(--primary);}
 .phase.done .pn{background:var(--primary);color:#fff;}
@@ -82,7 +82,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei
 
 /* plan cards */
 .plans{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:14px;}
-.plan{background:#fff;border-radius:12px;border:1px solid var(--line);padding:12px;position:relative;transition:.2s;}
+.plan{background:#fff;border-radius:12px;border:1px solid var(--line);padding:12px;position:relative;transition:.2s;text-align:left;color:inherit;font:inherit;cursor:pointer;}
 .plan.rec{border:2px solid var(--primary);box-shadow:0 4px 16px rgba(0,181,120,.16);}
 .plan .rec-tag{position:absolute;top:-10px;left:12px;background:var(--primary);color:#fff;font-size:10px;font-weight:700;padding:2px 8px;border-radius:10px;}
 .plan h4{font-size:13px;margin-bottom:8px;}
@@ -154,9 +154,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei
     <div class="tb-stat">人员覆盖率<b id="tbCoverage" class="warn">—</b></div>
     <div class="tb-stat">合规<b id="tbCompliance" class="ok">就绪</b></div>
     <div class="tb-right">
-      <div class="tb-btn reset" onclick="resetDemo()">↻ 一键重置剧情</div>
-      <div class="tb-btn" onclick="location.href='schedule.html'">门店排班台</div>
-      <div class="tb-btn" onclick="location.href='employee.html'">员工端</div>
+      <button type="button" class="tb-btn reset" data-action="reset">↻ 一键重置剧情</button>
+      <button type="button" class="tb-btn" data-action="schedule">门店排班台</button>
+      <button type="button" class="tb-btn" data-action="employee">员工端</button>
     </div>
   </div>
 
@@ -175,8 +175,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei
         <h3>🎯 经营目标（自然语言）</h3>
         <textarea id="goalInput" placeholder="用一句话描述经营目标…"></textarea>
         <div class="goal-actions">
-          <button class="btn btn-ghost" onclick="fillGoal()">填入会员日目标</button>
-          <button class="btn btn-primary" id="genBtn" onclick="generate()">生成方案</button>
+          <button type="button" class="btn btn-ghost" data-action="fill-goal">填入会员日目标</button>
+          <button type="button" class="btn btn-primary" id="genBtn" data-action="generate">生成方案</button>
         </div>
       </div>
 
@@ -225,7 +225,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei
       <div id="fbWrap"></div>
 
       <div class="confirm-bar" id="confirmBar" style="display:none;">
-        <button class="btn btn-primary" id="confirmBtn" onclick="confirmPlan()">确认执行推荐方案</button>
+        <button type="button" class="btn btn-primary" id="confirmBtn" data-action="confirm-plan">确认执行推荐方案</button>
       </div>
     </div>
   </div>

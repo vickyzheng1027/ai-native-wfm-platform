@@ -147,7 +147,7 @@ export const server = http.createServer(async (req,res) => {
     if (req.method === 'GET' && url.pathname === '/healthz') return sendJson(res,200,{ ok:true,status:'healthy',database:'sqlite',timestamp:nowIso() });
     if (url.pathname.startsWith('/api/')) return await api(req,res,url.pathname,url);
     const staticFiles = new Map([
-      ['/','index.html'],['/index.html','index.html'],['/operations-hub.html','operations-hub.html'],
+      ['/','index.html'],['/index.html','index.html'],['/operations-hub.html','index.html'],
       ['/home.html','home.html'],['/schedule.html','schedule.html'],['/employee.html','employee.html'],
       ['/hub-app.js','hub-app.js'],['/schedule-app.js','schedule-app.js'],['/employee-app.js','employee-app.js']
     ]);

@@ -61,7 +61,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei
 .composer{flex-shrink:0;background:#fff;border-top:1px solid var(--line);padding:10px 12px 16px;}
 .qr{display:flex;gap:8px;overflow-x:auto;padding-bottom:9px;}
 .qr::-webkit-scrollbar{height:0;}
-.qr-chip{white-space:nowrap;font-size:12.5px;padding:7px 13px;border-radius:16px;background:var(--bg);border:1px solid var(--line);color:var(--ink-2);cursor:pointer;transition:.15s;flex-shrink:0;}
+.qr-chip{white-space:nowrap;font-size:12.5px;padding:7px 13px;border-radius:16px;background:var(--bg);border:1px solid var(--line);color:var(--ink-2);cursor:pointer;transition:.15s;flex-shrink:0;font-family:inherit;}
 .qr-chip:active,.qr-chip:hover{border-color:var(--primary);color:var(--primary);background:var(--ok-bg);}
 .in-row{display:flex;gap:8px;align-items:center;}
 .in-row input{flex:1;border:1px solid var(--line);border-radius:20px;padding:10px 15px;font-size:13.5px;outline:none;transition:.2s;}
@@ -83,16 +83,16 @@ body{font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei
     <div class="chat" id="chat"></div>
     <div class="composer">
       <div class="qr">
-        <div class="qr-chip" onclick="quick('看看我这周的排班')">📅 我的排班</div>
-        <div class="qr-chip" onclick="quick('我周三生病了想请假')">🤒 我要请假</div>
-        <div class="qr-chip" onclick="quick('我想把周二的晚班换掉')">🔄 申请换班</div>
-        <div class="qr-chip" onclick="quick('昨天忘记打下班卡了')">🕐 补卡</div>
-        <div class="qr-chip" onclick="quick('会员日闭店盘点需要多留两小时')">➕ 加班</div>
-        <div class="qr-chip" onclick="quick('以后周末尽量让我休息')">⭐ 登记偏好</div>
+        <button type="button" class="qr-chip" data-quick="看看我这周的排班">📅 我的排班</button>
+        <button type="button" class="qr-chip" data-quick="我周三生病了想请假">🤒 我要请假</button>
+        <button type="button" class="qr-chip" data-quick="我想把周二的晚班换掉">🔄 申请换班</button>
+        <button type="button" class="qr-chip" data-quick="昨天忘记打下班卡了">🕐 补卡</button>
+        <button type="button" class="qr-chip" data-quick="会员日闭店盘点需要多留两小时">➕ 加班</button>
+        <button type="button" class="qr-chip" data-quick="以后周末尽量让我休息">⭐ 登记偏好</button>
       </div>
       <div class="in-row">
         <input id="input" placeholder="和 AI 说说你的需求…" autocomplete="off">
-        <button class="in-send" onclick="onSend()">➤</button>
+        <button type="button" class="in-send" id="sendEmployeeCommand">➤</button>
       </div>
     </div>
   </div>
