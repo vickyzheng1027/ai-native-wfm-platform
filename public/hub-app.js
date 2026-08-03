@@ -11,7 +11,7 @@ async function api(path,options){
 }
 function esc(value){return String(value==null?'':value).replace(/[&<>"']/g,function(char){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]})}
 function money(value){return '¥'+Number(value||0).toLocaleString('zh-CN',{maximumFractionDigits:0})}
-function showError(error){alert(error.message+(error.code?'（'+error.code+'）':''))}
+function showError(error){WfmUI.toast(error.message+(error.code?'（'+error.code+'）':''),'error')}
 
 async function ensureSession(){
   try{hub.user=(await api('/api/me')).user;return true}catch(error){}
@@ -93,7 +93,7 @@ function applyChosen(option){
 }
 async function confirmPlan(){
   if(!hub.run||hub.busy)return;hub.busy=true;$('confirmBtn').disabled=true;
-  try{var result=await api('/api/agent/runs/'+hub.run.id+'/confirm',{method:'POST'});$('resultGrid').innerHTML='<div class="rg"><div class="v">'+result.execution.addedShifts+'</div><div class="l">新增真实班次</div></div><div class="rg"><div class="v">'+esc(result.status)+'</div><div class="l">Agent 状态</div></div>';$('resultCard').className='result-card show';$('confirmBar').style.display='none';hub.phase=1;await loadContext();gotoPhase(1)}catch(error){showError(error)}finally{hub.busy=false;$('confirmBtn').disabled=false}
+  try{var result=await api('/api/agent/runs/'+hub.run.id+'/confirm',{method:'POST'});$('resultGrid').innerHTML='<div class="rg"><div class="v">'+result.execution.addedShifts+'</div><div class="l">新增真实班次</div></div><div class="rg"><div class="v">'+esc(result.status)+'</div><div class="l">Agent 状态</div></div>';$('resultCard').className='result-card show';$('confirmBar').style.display='none';hub.phase=1;await loadContext();gotoPhase(1);WfmUI.toast('方案已执行，班次和劳动力账户已更新')}catch(error){showError(error)}finally{hub.busy=false;$('confirmBtn').disabled=false}
 }
 function gotoPhase(index){hub.phase=index;$('tbTime').textContent=['活动前','活动中','活动后'][index];renderPhases();$('panelDuring').className='phase-panel'+(index===1?' show':'');$('panelAfter').className='phase-panel'+(index===2?' show':'');if(index===1)renderDuring();if(index===2)renderAfter()}
 function renderDuring(){
@@ -104,8 +104,8 @@ function renderAfter(){
   $('afterBody').innerHTML='<div class="mini-card"><b>活动结算与复盘</b><br>填写实际经营结果，系统将结合数据库考勤计算工时、账户、薪资和人效。<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px"><label>实际客流<br><input id="actualTraffic" type="number" min="0" step="1" placeholder="例如 1420" style="padding:8px;border:1px solid #cbd5e1;border-radius:4px"></label><label>实际销售额<br><input id="actualSales" type="number" min="0" step="0.01" placeholder="例如 180000" style="padding:8px;border:1px solid #cbd5e1;border-radius:4px"></label></div><button type="button" class="btn btn-primary" style="margin-top:10px" data-action="close-event">确认并执行结算</button></div>';
   $('fbLbl').style.display='block';$('fbWrap').innerHTML=feedback.length?feedback.map(function(item){return '<div class="fb-card"><b>'+esc(item.metric_key)+'</b><div>'+item.before_value+' → '+item.after_value+'</div><small>'+esc(item.evidence)+'</small></div>'}).join(''):'<div class="empty">尚未产生可信反哺记录</div>';
 }
-async function closeAndReview(){var traffic=Number($('actualTraffic').value);var sales=Number($('actualSales').value);if(!Number.isFinite(traffic)||traffic<0||!Number.isFinite(sales)||sales<0){alert('请填写有效的实际客流和实际销售额');return}if(!window.confirm('确认以客流 '+traffic+'、销售额 '+money(sales)+' 结算？结算后将生成工时、成本、薪资和反哺数据。'))return;try{var result=await api('/api/events/event-member-day/close',{method:'POST',body:{actualTraffic:traffic,actualSales:sales}});alert('结算完成：'+result.processed+'个班次，'+result.totalHours+'小时，成本'+money(result.totalCost));await loadContext();renderAfter()}catch(error){showError(error)}}
-async function resetDemo(){if(!window.confirm('确认清空演示租户的业务执行数据并恢复初始班次？该操作会写入审计日志。'))return;try{await api('/api/admin/demo-reset',{method:'POST'});hub.run=null;hub.chosen=null;hub.phase=0;$('plans').innerHTML='';$('canvas').innerHTML='';$('aiStateBox').style.display='none';$('resultCard').className='result-card';$('confirmBar').style.display='none';await loadContext()}catch(error){showError(error)}}
+async function closeAndReview(){var traffic=Number($('actualTraffic').value);var sales=Number($('actualSales').value);if(!Number.isFinite(traffic)||traffic<0||!Number.isFinite(sales)||sales<0){WfmUI.toast('请填写有效的实际客流和实际销售额','error');return}var accepted=await WfmUI.confirm({title:'确认活动结算',message:'将以实际客流 '+traffic+'、实际销售额 '+money(sales)+' 结算，并生成工时、成本、薪资和反哺数据。',confirmText:'确认结算'});if(!accepted)return;try{var result=await api('/api/events/event-member-day/close',{method:'POST',body:{actualTraffic:traffic,actualSales:sales}});WfmUI.toast('结算完成：'+result.processed+' 个班次，'+result.totalHours+' 小时，成本 '+money(result.totalCost));await loadContext();renderAfter()}catch(error){showError(error)}}
+async function resetDemo(){var accepted=await WfmUI.confirm({title:'重置演示剧情',message:'将清空演示租户的业务执行数据并恢复初始班次，此操作会写入审计日志。',confirmText:'确认重置',danger:true});if(!accepted)return;try{await api('/api/admin/demo-reset',{method:'POST'});hub.run=null;hub.chosen=null;hub.phase=0;$('plans').innerHTML='';$('canvas').innerHTML='';$('aiStateBox').style.display='none';$('resultCard').className='result-card';$('confirmBar').style.display='none';await loadContext();WfmUI.toast('演示剧情已恢复到初始状态')}catch(error){showError(error)}}
 function handleClick(event){
   var phase=event.target.closest('[data-phase]');if(phase){gotoPhase(Number(phase.dataset.phase));return}
   var plan=event.target.closest('[data-plan-id]');if(plan){pickPlan(plan.dataset.planId);return}

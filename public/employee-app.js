@@ -8,13 +8,12 @@ function typing(){return aiBubble('<div class="typing"><i></i><i></i><i></i></di
 async function api(path,options){options=options||{};var response=await fetch(path,{method:options.method||'GET',headers:{'Content-Type':'application/json'},body:options.body?JSON.stringify(options.body):undefined});var body=await response.json();if(!response.ok){var error=new Error(body.error||'请求失败');error.code=body.code;throw error}return body.data||body}
 async function login(){
   try{emp.user=(await api('/api/me')).user;if(emp.user.role!=='employee')throw new Error('请使用员工账号登录');return}catch(error){}
-  var username=window.prompt('员工账号','employee');if(!username)throw new Error('需要登录');
-  var password=window.prompt('员工密码','Demo@2026');
-  var result=await api('/api/auth/login',{method:'POST',body:{tenantCode:'DEMO',username:username,password:password}});emp.user=result.user;
+  var credentials=await WfmUI.credentials({title:'员工端登录',message:'使用员工账号进入个人事务助手',username:'employee',password:'Demo@2026'});if(!credentials)throw new Error('需要登录');
+  var result=await api('/api/auth/login',{method:'POST',body:{tenantCode:'DEMO',username:credentials.username,password:credentials.password}});emp.user=result.user;
   if(emp.user.role!=='employee'){await api('/api/auth/logout',{method:'POST'});throw new Error('该账号不是员工角色')}
 }
 function quick(text){$('input').value=text;onSend()}
-async function onSend(){var text=$('input').value.trim();if(!text||emp.busy)return;$('input').value='';userBubble(text);emp.busy=true;var loading=typing();try{var command=await api('/api/employee/commands',{method:'POST',body:{text:text}});loading.remove();renderCommand(command)}catch(error){loading.remove();aiBubble('<h5>处理失败</h5>'+esc(error.message)+'<div class="note warn">系统没有使用模拟结果代替真实 AI 调用。</div>')}finally{emp.busy=false}}
+async function onSend(){var text=$('input').value.trim();if(!text||emp.busy)return;$('input').value='';userBubble(text);emp.busy=true;var loading=typing();try{var command=await api('/api/employee/commands',{method:'POST',body:{text:text}});loading.remove();renderCommand(command)}catch(error){loading.remove();aiBubble('<h5>处理失败</h5>'+esc(error.message)+'<div class="note warn">本次操作未写入数据库，请修正信息后重试。</div>')}finally{emp.busy=false}}
 function scheduleHtml(schedules){if(!schedules||!schedules.length)return '<div class="note">你当前没有有效班次。</div>';return '<div class="sc-card">'+schedules.map(function(shift){return '<div class="sc-row"><span><span class="sc-day">'+esc(shift.shiftDate)+'</span><br><span class="sc-time">'+esc(shift.store)+'</span></span><span><span class="sc-shift">'+esc(shift.roleRequired)+'</span><br><span class="sc-time">'+esc(shift.startAt)+'-'+esc(shift.endAt)+'</span></span></div>'}).join('')+'</div>'}
 function renderCommand(command){var intent=command.intent;if(command.status==='completed'&&command.result){aiBubble('<h5>我的真实排班</h5>'+scheduleHtml(command.result.schedules)+'<div class="note">数据来自后端数据库，刷新后仍保持一致。</div>');return}
   if(intent.action==='unknown'){aiBubble('<h5>还需要一点信息</h5>'+esc(intent.summary));return}

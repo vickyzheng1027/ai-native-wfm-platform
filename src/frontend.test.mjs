@@ -21,6 +21,14 @@ test('三个交互页面均加载外部脚本并注册点击处理',async()=>{
     const html=await readFile(new URL(`../public/${page}`,import.meta.url),'utf8');
     const js=await readFile(new URL(`../public/${script}`,import.meta.url),'utf8');
     assert.match(html,new RegExp(`<script src=["']${script.replace('.','\\.')}["']`));
+    assert.match(html,/<script src=["']ui-feedback\.js["']/);
     assert.match(js,/addEventListener\(['"]click['"]/);
+  }
+});
+
+test('页面脚本不使用浏览器原生提示框',async()=>{
+  for(const script of ['hub-app.js','schedule-app.js','employee-app.js']){
+    const js=await readFile(new URL(`../public/${script}`,import.meta.url),'utf8');
+    assert.doesNotMatch(js,/(?:^|[^\w$.])(?:window\.)?(?:alert|confirm|prompt)\s*\(/,`${script} 仍使用浏览器原生提示框`);
   }
 });

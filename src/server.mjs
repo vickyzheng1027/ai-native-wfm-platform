@@ -154,7 +154,7 @@ export const server = http.createServer(async (req,res) => {
     const staticFiles = new Map([
       ['/','index.html'],['/index.html','index.html'],['/operations-hub.html','index.html'],
       ['/home.html','home.html'],['/schedule.html','schedule.html'],['/employee.html','employee.html'],
-      ['/hub-app.js','hub-app.js'],['/schedule-app.js','schedule-app.js'],['/employee-app.js','employee-app.js']
+      ['/hub-app.js','hub-app.js'],['/schedule-app.js','schedule-app.js'],['/employee-app.js','employee-app.js'],['/ui-feedback.js','ui-feedback.js']
     ]);
     if (req.method === 'GET' && staticFiles.has(url.pathname)) {
       const filename = staticFiles.get(url.pathname);
