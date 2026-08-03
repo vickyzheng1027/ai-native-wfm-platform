@@ -98,3 +98,9 @@ test('打卡、工时结算、工时银行、账户分摊、薪资和数据反�
   assert.ok(auditReport(db, manager).some(row => row.action === 'event.closed'));
   assert.equal(closeEvent(db, manager, 'event-member-day').processed, 0);
 });
+
+test('活动结算拒绝缺失或无效的实际经营数据',()=>{
+  const {db,manager}=setup();
+  assert.throws(()=>closeEvent(db,manager,'event-member-day',{}),error=>error.code==='INVALID_EVENT_OUTCOME');
+  assert.throws(()=>closeEvent(db,manager,'event-member-day',{actualTraffic:-1,actualSales:100}),error=>error.code==='INVALID_EVENT_OUTCOME');
+});

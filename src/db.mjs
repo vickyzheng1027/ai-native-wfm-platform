@@ -127,10 +127,63 @@ function migrate(db) {
       id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, user_id TEXT, action TEXT NOT NULL,
       entity_type TEXT NOT NULL, entity_id TEXT, detail_json TEXT NOT NULL, created_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS demand_history (
+      id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, store_id TEXT NOT NULL, business_date TEXT NOT NULL,
+      weekday INTEGER NOT NULL, event_type TEXT NOT NULL, traffic INTEGER NOT NULL, sales REAL NOT NULL,
+      required_headcount INTEGER NOT NULL, data_source TEXT NOT NULL, created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS demand_forecasts (
+      id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, store_id TEXT NOT NULL, event_id TEXT,
+      forecast_date TEXT NOT NULL, predicted_traffic REAL NOT NULL, lower_bound REAL NOT NULL,
+      upper_bound REAL NOT NULL, required_headcount INTEGER NOT NULL, algorithm TEXT NOT NULL,
+      features_json TEXT NOT NULL, confidence REAL NOT NULL, version INTEGER NOT NULL, created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS compliance_rules (
+      id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, rule_code TEXT NOT NULL, category TEXT NOT NULL,
+      scope_json TEXT NOT NULL, expression_json TEXT NOT NULL, source TEXT NOT NULL, severity TEXT NOT NULL,
+      version TEXT NOT NULL, effective_from TEXT NOT NULL, status TEXT NOT NULL, is_demo_rule INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL, UNIQUE(tenant_id,rule_code,version)
+    );
+    CREATE TABLE IF NOT EXISTS agent_runs (
+      id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, user_id TEXT NOT NULL, event_id TEXT, prompt TEXT NOT NULL,
+      model TEXT NOT NULL, status TEXT NOT NULL, intent_json TEXT, plan_id TEXT, response_id TEXT,
+      error_message TEXT, created_at TEXT NOT NULL, completed_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS agent_steps (
+      id TEXT PRIMARY KEY, run_id TEXT NOT NULL, sequence INTEGER NOT NULL, state TEXT NOT NULL,
+      tool_name TEXT, input_json TEXT NOT NULL, output_json TEXT, duration_ms INTEGER NOT NULL,
+      status TEXT NOT NULL, created_at TEXT NOT NULL, FOREIGN KEY(run_id) REFERENCES agent_runs(id)
+    );
+    CREATE TABLE IF NOT EXISTS decision_feedback (
+      id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, plan_id TEXT NOT NULL, user_id TEXT NOT NULL,
+      action TEXT NOT NULL, reason TEXT, weight_before REAL, weight_after REAL, created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS employee_commands (
+      id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, user_id TEXT NOT NULL, employee_id TEXT NOT NULL,
+      raw_text TEXT NOT NULL, model TEXT NOT NULL, intent_json TEXT NOT NULL, status TEXT NOT NULL,
+      result_json TEXT, created_at TEXT NOT NULL, confirmed_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS shift_swap_requests (
+      id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, employee_id TEXT NOT NULL, shift_id TEXT NOT NULL,
+      target_employee_id TEXT, reason TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
+      created_at TEXT NOT NULL, decided_at TEXT,
+      FOREIGN KEY(employee_id) REFERENCES employees(id), FOREIGN KEY(shift_id) REFERENCES shifts(id),
+      FOREIGN KEY(target_employee_id) REFERENCES employees(id)
+    );
+    CREATE TABLE IF NOT EXISTS employee_preferences (
+      id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, employee_id TEXT NOT NULL, preference_text TEXT NOT NULL,
+      effective_date TEXT, status TEXT NOT NULL DEFAULT 'active', version INTEGER NOT NULL,
+      created_at TEXT NOT NULL, superseded_at TEXT,
+      FOREIGN KEY(employee_id) REFERENCES employees(id)
+    );
     CREATE INDEX IF NOT EXISTS idx_shifts_event ON shifts(event_id, shift_date);
     CREATE INDEX IF NOT EXISTS idx_requests_status ON employee_requests(tenant_id, status);
     CREATE INDEX IF NOT EXISTS idx_attendance_employee ON attendance_events(employee_id, occurred_at);
     CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(tenant_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_agent_steps_run ON agent_steps(run_id, sequence);
+    CREATE INDEX IF NOT EXISTS idx_forecasts_store_date ON demand_forecasts(tenant_id, store_id, forecast_date);
+    CREATE INDEX IF NOT EXISTS idx_swap_requests_status ON shift_swap_requests(tenant_id, status);
+    CREATE INDEX IF NOT EXISTS idx_employee_preferences ON employee_preferences(employee_id, status);
   `);
   const planColumns = new Set(db.prepare('PRAGMA table_info(workforce_plans)').all().map(column => column.name));
   if (!planColumns.has('alternatives_json')) db.exec('ALTER TABLE workforce_plans ADD COLUMN alternatives_json TEXT');
@@ -179,6 +232,21 @@ function seed(db) {
       .run('account-daily', tenantId, 'STORE-DAILY', '旗舰店日常账户', 'store', 20000, 0);
     db.prepare(`INSERT INTO events(id,tenant_id,store_id,labor_account_id,name,event_date,forecast_traffic,forecast_sales,required_headcount,status,created_at)
       VALUES(?,?,?,?,?,?,?,?,?,?,?)`).run('event-member-day', tenantId, 'store-flagship', 'account-member-day', '8月会员日', '2026-08-08', 1350, 168000, 8, 'planning', now);
+    const insertHistory = db.prepare(`INSERT INTO demand_history(id,tenant_id,store_id,business_date,weekday,event_type,traffic,sales,required_headcount,data_source,created_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?)`);
+    [
+      ['2026-06-13',6,'member_day',980,118000,6],['2026-06-27',6,'member_day',1060,129000,7],
+      ['2026-07-11',6,'member_day',1120,136000,7],['2026-07-25',6,'member_day',1210,149000,8],
+      ['2026-08-01',6,'normal',890,101000,6],['2026-08-02',0,'normal',830,96000,5]
+    ].forEach((row,index) => insertHistory.run(`history-${index+1}`,tenantId,'store-flagship',...row,'demo_seed',now));
+    const insertRule = db.prepare(`INSERT INTO compliance_rules(id,tenant_id,rule_code,category,scope_json,expression_json,source,severity,version,effective_from,status,is_demo_rule,created_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+    [
+      ['rule-weekly-hours','WEEKLY-HOURS','hard',{region:'CN'},{metric:'weeklyHours',op:'<=',value:50},'企业演示政策','block'],
+      ['rule-daily-hours','DAILY-HOURS','hard',{region:'CN'},{metric:'dailyHours',op:'<=',value:10},'企业演示政策','block'],
+      ['rule-rest','REST-INTERVAL','hard',{region:'CN'},{metric:'restHours',op:'>=',value:11},'企业演示政策','block'],
+      ['rule-budget','EVENT-BUDGET','hard',{region:'*'},{metric:'addedCost',op:'<=',value:'accountBudget'},'活动预算政策','block']
+    ].forEach(row => insertRule.run(row[0],tenantId,row[1],row[2],JSON.stringify(row[3]),JSON.stringify(row[4]),row[5],row[6],'v1','2026-01-01','active',1,now));
     const insertShift = db.prepare(`INSERT INTO shifts(id,tenant_id,employee_id,store_id,event_id,shift_date,start_at,end_at,role_required,source,status,labor_account_id,created_at)
       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`);
     [

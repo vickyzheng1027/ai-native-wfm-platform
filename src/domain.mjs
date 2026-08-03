@@ -347,6 +347,11 @@ export function closeEvent(db, user, eventId, outcomes = {}) {
   requireRole(user, 'manager', 'admin');
   const event = db.prepare('SELECT * FROM events WHERE id=? AND tenant_id=?').get(eventId, user.tenantId);
   if (!event) throw new DomainError('活动不存在', 404);
+  const actualTraffic = outcomes.actualTraffic == null ? (event.actual_traffic == null ? Number.NaN : Number(event.actual_traffic)) : Number(outcomes.actualTraffic);
+  const actualSales = outcomes.actualSales == null ? (event.actual_sales == null ? Number.NaN : Number(event.actual_sales)) : Number(outcomes.actualSales);
+  if (!Number.isFinite(actualTraffic) || actualTraffic < 0 || !Number.isFinite(actualSales) || actualSales < 0) {
+    throw new DomainError('请填写有效的实际客流和实际销售额', 400, 'INVALID_EVENT_OUTCOME');
+  }
   const shifts = db.prepare(`SELECT sh.*,e.hourly_rate,e.store_id AS home_store FROM shifts sh JOIN employees e ON e.id=sh.employee_id
     WHERE sh.event_id=? AND sh.status IN ('planned','confirmed','completed')`).all(eventId);
   return withTransaction(db, () => {
@@ -384,8 +389,6 @@ export function closeEvent(db, user, eventId, outcomes = {}) {
       processed += 1;
     }
     db.prepare("UPDATE labor_accounts SET spent=? WHERE id=?").run(totalCost, event.labor_account_id);
-    const actualTraffic = Number(outcomes.actualTraffic || 1380);
-    const actualSales = Number(outcomes.actualSales || 171500);
     db.prepare("UPDATE events SET status='closed',actual_traffic=?,actual_sales=? WHERE id=?").run(actualTraffic, actualSales, eventId);
     if (!db.prepare('SELECT 1 FROM feedback_metrics WHERE event_id=?').get(eventId)) {
       const insertFeedback = db.prepare(`INSERT INTO feedback_metrics(id,tenant_id,event_id,metric_type,metric_key,before_value,after_value,evidence,created_at)

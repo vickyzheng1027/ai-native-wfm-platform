@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { createDatabase } from './db.mjs';
+import { operationsContext, createAgentRun, getAgentRun, confirmAgentRun, createEmployeeCommand, confirmEmployeeCommand, resetDemoScenario } from './orchestration.mjs';
 import {
   DomainError, login, logout, authenticate, dashboard, listEmployees, createEmployee, updateEmployee,
   listStores, listShifts, createShift, createRequest, listRequests, decideRequest, punch,
@@ -80,6 +81,8 @@ async function api(req, res, pathname, url) {
   const user = currentUser(req);
   if (req.method === 'GET' && pathname === '/api/me') return sendJson(res, 200, { ok:true, user });
   if (req.method === 'GET' && pathname === '/api/dashboard') return sendJson(res, 200, { ok:true, data:dashboard(db,user) });
+  if (req.method === 'GET' && pathname === '/api/operations/context') return sendJson(res,200,{ok:true,data:operationsContext(db,user,url.searchParams.get('eventId') || undefined)});
+  if (req.method === 'POST' && pathname === '/api/admin/demo-reset') return sendJson(res,200,{ok:true,data:resetDemoScenario(db,user)});
   if (req.method === 'GET' && pathname === '/api/stores') return sendJson(res, 200, { ok:true, data:listStores(db,user) });
   if (req.method === 'GET' && pathname === '/api/employees') return sendJson(res, 200, { ok:true, data:listEmployees(db,user) });
   if (req.method === 'POST' && pathname === '/api/employees') return sendJson(res, 201, { ok:true, data:createEmployee(db,user,await readJson(req)) });
@@ -103,6 +106,17 @@ async function api(req, res, pathname, url) {
     const body = await readJson(req);
     return sendJson(res, 201, { ok:true, data:generatePlan(db,user,String(body.prompt || ''),body.eventId) });
   }
+  if (req.method === 'POST' && pathname === '/api/agent/runs') return sendJson(res,201,{ok:true,data:await createAgentRun(db,user,await readJson(req))});
+  params = routeMatch(pathname, '/api/agent/runs/:id');
+  if (req.method === 'GET' && params) return sendJson(res,200,{ok:true,data:getAgentRun(db,user,params.id)});
+  params = routeMatch(pathname, '/api/agent/runs/:id/confirm');
+  if (req.method === 'POST' && params) return sendJson(res,200,{ok:true,data:confirmAgentRun(db,user,params.id)});
+  if (req.method === 'POST' && pathname === '/api/employee/commands') {
+    const body=await readJson(req);
+    return sendJson(res,201,{ok:true,data:await createEmployeeCommand(db,user,String(body.text||''))});
+  }
+  params = routeMatch(pathname, '/api/employee/commands/:id/confirm');
+  if (req.method === 'POST' && params) return sendJson(res,200,{ok:true,data:confirmEmployeeCommand(db,user,params.id)});
   params = routeMatch(pathname, '/api/ai/plans/:id/execute');
   if (req.method === 'POST' && params) return sendJson(res, 200, { ok:true, data:executePlan(db,user,params.id) });
   params = routeMatch(pathname, '/api/events/:id/close');
@@ -132,8 +146,15 @@ export const server = http.createServer(async (req,res) => {
     const url = new URL(req.url || '/',`http://${req.headers.host || 'localhost'}`);
     if (req.method === 'GET' && url.pathname === '/healthz') return sendJson(res,200,{ ok:true,status:'healthy',database:'sqlite',timestamp:nowIso() });
     if (url.pathname.startsWith('/api/')) return await api(req,res,url.pathname,url);
-    if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) return await serve(res,'index.html','text/html; charset=utf-8');
-    if (req.method === 'GET' && url.pathname === '/app.js') return await serve(res,'app.js','text/javascript; charset=utf-8');
+    const staticFiles = new Map([
+      ['/','index.html'],['/index.html','index.html'],['/operations-hub.html','operations-hub.html'],
+      ['/home.html','home.html'],['/schedule.html','schedule.html'],['/employee.html','employee.html'],
+      ['/hub-app.js','hub-app.js'],['/schedule-app.js','schedule-app.js'],['/employee-app.js','employee-app.js']
+    ]);
+    if (req.method === 'GET' && staticFiles.has(url.pathname)) {
+      const filename = staticFiles.get(url.pathname);
+      return await serve(res,filename,filename.endsWith('.js')?'text/javascript; charset=utf-8':'text/html; charset=utf-8');
+    }
     throw new DomainError('资源不存在',404,'NOT_FOUND');
   } catch (error) {
     const status = error instanceof DomainError ? error.status : 500;

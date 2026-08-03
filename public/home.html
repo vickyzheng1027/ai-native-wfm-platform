@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Native WFM · 劳动力运营中枢</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+body{font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif;min-height:100vh;background:linear-gradient(135deg,#0a1f44,#123a6b 60%,#0b6e57);color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:40px 20px;}
+.brand{display:flex;align-items:center;gap:12px;margin-bottom:8px;}
+.brand .d{width:44px;height:44px;border-radius:12px;background:linear-gradient(135deg,#00b578,#00b8d9);display:flex;align-items:center;justify-content:center;font-size:22px;}
+.brand h1{font-size:26px;font-weight:800;}
+.sub{color:rgba(255,255,255,.7);font-size:14px;margin-bottom:6px;text-align:center;}
+.tagline{color:rgba(255,255,255,.55);font-size:13px;margin-bottom:34px;text-align:center;max-width:640px;line-height:1.7;}
+.cards{display:grid;grid-template-columns:repeat(3,minmax(220px,260px));gap:18px;}
+.card{background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.16);border-radius:16px;padding:24px 20px;cursor:pointer;transition:.25s;text-decoration:none;color:#fff;backdrop-filter:blur(6px);}
+.card:hover{background:rgba(255,255,255,.15);transform:translateY(-4px);border-color:rgba(0,181,120,.6);}
+.card .ic{width:48px;height:48px;border-radius:12px;background:rgba(0,181,120,.25);display:flex;align-items:center;justify-content:center;font-size:24px;margin-bottom:14px;}
+.card h3{font-size:16px;margin-bottom:8px;}
+.card p{font-size:12.5px;color:rgba(255,255,255,.65);line-height:1.6;}
+.card .tag{display:inline-block;margin-top:12px;font-size:11px;background:rgba(0,181,120,.3);border:1px solid rgba(0,181,120,.5);padding:3px 10px;border-radius:12px;}
+.foot{margin-top:36px;font-size:12px;color:rgba(255,255,255,.4);text-align:center;line-height:1.8;}
+</style>
+</head>
+<body>
+  <div class="brand"><span class="d">✦</span><h1>Workforce Copilot</h1></div>
+  <div class="sub">AI Native 劳动力运营中枢 · MVP</div>
+  <div class="tagline">从「人操作系统」到「人提出目标，AI 编排系统」——以会员日活动为主线，贯穿人事、排班、考勤、工时、假期、工时银行、薪资、劳动力账户与人效九大模块的端到端闭环。</div>
+  <div class="cards">
+    <a class="card" href="operations-hub.html">
+      <div class="ic">🎛️</div>
+      <h3>AI 劳动力运营中枢</h3>
+      <p>管理端。接收经营目标，跨模块编排，生成候选方案并测算经营影响，合规护栏 + 人在回路确认执行。</p>
+      <span class="tag">会员日黄金剧情</span>
+    </a>
+    <a class="card" href="employee.html">
+      <div class="ic">📱</div>
+      <h3>AI 员工伙伴</h3>
+      <p>员工端。对话式查班、请假、换班、补卡、加班、登记偏好；请假即时联动管理端触发自愈调班。</p>
+      <span class="tag">移动端</span>
+    </a>
+    <a class="card" href="schedule.html">
+      <div class="ic">📅</div>
+      <h3>门店排班工作台</h3>
+      <p>单店场景。自然语言目标 → 多目标排班 → 合规前置 → 动态自愈 → 复盘迭代的最小闭环演示。</p>
+      <span class="tag">排班闭环</span>
+    </a>
+  </div>
+  <div class="foot">所有金额、法规阈值与员工姓名均为演示数据 · 业务数字由确定性规则函数计算<br>合规规则为 Demo 演示规则，不代表真实地区完整劳动法能力</div>
+</body>
+</html>
