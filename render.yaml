@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: ai-native-wfm-platform
+    runtime: node
+    plan: free
+    buildCommand: npm test
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_VERSION
+        value: 24.16.0
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_PATH
+        value: /tmp/ai-native-wfm-platform/wfm.db
