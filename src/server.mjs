@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { createDatabase } from './db.mjs';
-import { operationsContext, createAgentRun, getAgentRun, confirmAgentRun, createEmployeeCommand, confirmEmployeeCommand, resetDemoScenario } from './orchestration.mjs';
+import { operationsContext, createAgentRun, getAgentRun, selectAgentPlan, confirmAgentRun, createEmployeeCommand, confirmEmployeeCommand, resetDemoScenario } from './orchestration.mjs';
 import {
   DomainError, login, logout, authenticate, dashboard, listEmployees, createEmployee, updateEmployee,
   listStores, listShifts, createShift, createRequest, listRequests, decideRequest, punch,
@@ -111,6 +111,11 @@ async function api(req, res, pathname, url) {
   if (req.method === 'GET' && params) return sendJson(res,200,{ok:true,data:getAgentRun(db,user,params.id)});
   params = routeMatch(pathname, '/api/agent/runs/:id/confirm');
   if (req.method === 'POST' && params) return sendJson(res,200,{ok:true,data:confirmAgentRun(db,user,params.id)});
+  params = routeMatch(pathname, '/api/agent/runs/:id/select');
+  if (req.method === 'POST' && params) {
+    const body=await readJson(req);
+    return sendJson(res,200,{ok:true,data:selectAgentPlan(db,user,params.id,String(body.optionId||''))});
+  }
   if (req.method === 'POST' && pathname === '/api/employee/commands') {
     const body=await readJson(req);
     return sendJson(res,201,{ok:true,data:await createEmployeeCommand(db,user,String(body.text||''))});

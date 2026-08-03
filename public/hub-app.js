@@ -69,7 +69,7 @@ async function generate(){
     hub.run=await api('/api/agent/runs',{method:'POST',body:{prompt:prompt,eventId:'event-member-day'}});
     var details=await api('/api/agent/runs/'+hub.run.id);
     $('aiNow').textContent=details.status;
-    renderSteps(details.steps);renderPlans(hub.run.plan.alternatives);hub.chosen=hub.run.plan.option;
+    renderSteps(details.steps);hub.chosen=hub.run.plan.option;renderPlans(hub.run.plan.alternatives);
     applyChosen(hub.run.plan.option);$('confirmBar').style.display='block';
   }catch(error){$('aiNow').textContent='NEEDS_ATTENTION';$('canvas').innerHTML+='<div class="task risk"><div class="ti">!</div><div class="tc"><b>Agent 运行失败</b><div>'+esc(error.message)+'</div></div></div>';showError(error)}
   finally{hub.busy=false;$('genBtn').disabled=false}
@@ -78,17 +78,18 @@ function renderSteps(steps){
   $('canvas').innerHTML=steps.map(function(step){return '<div class="task '+(step.status==='failed'?'risk':'')+'"><div class="ti">'+(step.toolName?'T':'AI')+'</div><div class="tc"><b>'+esc(step.state)+'</b><div class="tool">'+esc(step.toolName||'agent_state')+'</div><div>'+(step.toolName?'真实工具耗时 '+step.durationMs+'ms':'状态已持久化')+'</div></div><div class="st">'+(step.status==='failed'?'!':'✓')+'</div></div>'}).join('');
 }
 function renderPlans(plans){
-  $('plans').innerHTML=plans.map(function(plan){var impact=plan.impact,comp=plan.compliance;return '<button type="button" class="plan '+(plan.recommended?'rec':'')+'" data-plan-id="'+esc(plan.id)+'">'+(plan.recommended?'<div class="rec-tag">AI 推荐</div>':'')+'<h4>'+esc(plan.name)+'</h4><div class="row"><span>覆盖率</span><b>'+impact.coverageBefore+'% → '+impact.coverageAfter+'%</b></div><div class="row"><span>新增成本</span><b>'+money(impact.addedCost)+'</b></div><div class="row"><span>预算余量</span><b>'+money(impact.budgetRemaining)+'</b></div><div class="row"><span>影响员工</span><b>'+impact.affectedEmployees+' 人</b></div><div class="comp '+(comp.passed?'ok':'no')+'">'+(comp.passed?'合规计算通过':'硬规则拦截')+'</div></button>'}).join('');
+  $('plans').innerHTML=plans.map(function(plan){var impact=plan.impact,comp=plan.compliance,selected=hub.chosen&&hub.chosen.id===plan.id;return '<button type="button" class="plan '+(plan.recommended?'rec ':'')+(selected?'selected':'')+'" data-plan-id="'+esc(plan.id)+'">'+(plan.recommended?'<div class="rec-tag">引擎推荐</div>':'')+'<h4>'+esc(plan.name)+(selected?' · 已选择':'')+'</h4><div class="row"><span>覆盖率</span><b>'+impact.coverageBefore+'% → '+impact.coverageAfter+'%</b></div><div class="row"><span>新增成本</span><b>'+money(impact.addedCost)+'</b></div><div class="row"><span>预算余量</span><b>'+money(impact.budgetRemaining)+'</b></div><div class="row"><span>影响员工</span><b>'+impact.affectedEmployees+' 人</b></div><div class="comp '+(comp.passed?'ok':'no')+'">'+(comp.passed?'可进入人工确认':'硬规则拦截，仅供比较')+'</div></button>'}).join('');
 }
-function pickPlan(id){
-  if(!hub.run)return;var plan=hub.run.plan.alternatives.find(function(item){return item.id===id});if(!plan||!plan.compliance.passed)return;
-  var option=Object.assign({},hub.run.plan.option,{id:plan.id,name:plan.name,actions:plan.actions});hub.chosen=option;applyChosen(option);
+async function pickPlan(id){
+  if(!hub.run||hub.busy)return;var plan=hub.run.plan.alternatives.find(function(item){return item.id===id});if(!plan)return;
+  hub.busy=true;try{var selected=await api('/api/agent/runs/'+hub.run.id+'/select',{method:'POST',body:{optionId:id}});hub.chosen=selected.option;hub.run.plan.option=selected.option;renderPlans(hub.run.plan.alternatives);applyChosen(selected.option)}catch(error){showError(error)}finally{hub.busy=false}
 }
 function applyChosen(option){
-  $('mCost').textContent=money(option.cost);$('mEmp').textContent=option.addedHeadcount+' 人';
+  $('mCost').textContent=money(option.cost);$('mEmp').textContent=option.affectedEmployees+' 人';
   $('mBudget').textContent=money(hub.context.event.budget-hub.context.event.spent-option.cost);
   $('guardWrap').innerHTML='<div class="guard '+(option.checks.every(function(check){return check.passed})?'ok':'')+'"><h4>确定性合规引擎</h4>'+option.checks.map(function(check){return '<div class="item">'+(check.passed?'✓':'⛔')+' <span><b>'+esc(check.name)+'</b>：'+esc(check.evidence)+'</span></div>'}).join('')+'</div>';
-  $('changes').innerHTML=option.candidates.map(function(candidate){return '<div class="change-item">跨店支援：'+esc(candidate.name)+' · '+esc(candidate.store)+' → 旗舰店</div>'}).join('')+'<div class="change-item">新增工时写入活动劳动力账户，执行前将二次校验</div>';
+  $('changes').innerHTML=option.candidates.map(function(candidate){return '<div class="change-item">跨店支援：'+esc(candidate.name)+' · '+esc(candidate.store)+' → 旗舰店</div>'}).join('')+option.extensions.map(function(item){return '<div class="change-item">延长班次：'+esc(item.name)+' · 延长 '+item.hours+'h</div>'}).join('')+'<div class="change-item">当前选择：'+esc(option.name)+'；新增工时写入活动劳动力账户</div>';
+  var blocked=option.checks.some(function(check){return !check.passed&&check.blocking!==false});$('confirmBtn').disabled=blocked;$('confirmBtn').textContent=blocked?'当前方案被硬规则拦截':'确认执行当前方案';
 }
 async function confirmPlan(){
   if(!hub.run||hub.busy)return;hub.busy=true;$('confirmBtn').disabled=true;

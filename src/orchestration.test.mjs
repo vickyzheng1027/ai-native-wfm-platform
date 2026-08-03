@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { createDatabase } from './db.mjs';
-import { confirmEmployeeCommand, createAgentRun, createEmployeeCommand, operationsContext } from './orchestration.mjs';
+import { confirmEmployeeCommand, createAgentRun, createEmployeeCommand, operationsContext, selectAgentPlan, confirmAgentRun } from './orchestration.mjs';
 
 const employeeUser = {
   id:'user-employee', tenantId:'tenant-demo', tenantCode:'DEMO', role:'employee', employeeId:'emp-linxiao'
@@ -67,6 +67,39 @@ test('无 OpenAI Key 时员工自然语言由确定性引擎解析',async()=>{
     assert.equal(command.intent.action,'query_schedule');
     assert.equal(command.status,'completed');
     assert.ok(command.result.schedules.length>0);
+  }finally{
+    if(original!==undefined)process.env.OPENAI_API_KEY=original;
+  }
+});
+
+test('管理者选择组合方案后后端保存并执行对应人员动作',async()=>{
+  const original=process.env.OPENAI_API_KEY;
+  delete process.env.OPENAI_API_KEY;
+  try{
+    const db=createDatabase(':memory:');
+    const run=await createAgentRun(db,managerUser,{prompt:'会员日覆盖率达到95%，预算不超2000元，全程合规并计入劳动力账户'});
+    const selected=selectAgentPlan(db,managerUser,run.id,'PLAN-MIX');
+    assert.equal(selected.option.id,'PLAN-MIX');
+    assert.equal(selected.option.candidates.length,2);
+    assert.equal(selected.option.extensions.length,2);
+    assert.equal(JSON.parse(db.prepare('SELECT option_json FROM workforce_plans WHERE id=?').get(run.plan.id).option_json).id,'PLAN-MIX');
+    const result=confirmAgentRun(db,managerUser,run.id);
+    assert.equal(result.execution.addedShifts,2);
+    assert.equal(result.execution.extendedShifts,2);
+  }finally{
+    if(original!==undefined)process.env.OPENAI_API_KEY=original;
+  }
+});
+
+test('硬规则拦截方案可以选择比较但不能确认执行',async()=>{
+  const original=process.env.OPENAI_API_KEY;
+  delete process.env.OPENAI_API_KEY;
+  try{
+    const db=createDatabase(':memory:');
+    const run=await createAgentRun(db,managerUser,{prompt:'会员日覆盖率达到95%，预算不超2000元，全程合规并计入劳动力账户'});
+    const selected=selectAgentPlan(db,managerUser,run.id,'PLAN-OT');
+    assert.equal(selected.option.checks.some(check=>!check.passed&&check.blocking),true);
+    assert.throws(()=>confirmAgentRun(db,managerUser,run.id),error=>error.code==='COMPLIANCE_FAILED');
   }finally{
     if(original!==undefined)process.env.OPENAI_API_KEY=original;
   }

@@ -286,39 +286,39 @@ export function generatePlan(db, user, prompt, eventId = 'event-member-day') {
     budgetRemaining:event.budget - event.spent, laborAccountId:event.labor_account_id,
     averageHourlyRate:average(homeRates), averageSupportRate:average(candidates)
   }, goals);
-  const alternatives = generateCandidatePlans(scenario);
+  const rawAlternatives = generateCandidatePlans(scenario);
+  const existingShifts = db.prepare(`SELECT sh.id,e.id AS employeeId,e.name,e.position,sh.end_at AS endAt
+    FROM shifts sh JOIN employees e ON e.id=sh.employee_id WHERE sh.event_id=? AND sh.status IN ('planned','confirmed') ORDER BY e.hourly_rate`).all(eventId);
+  const budgetRemaining = event.budget - event.spent;
+  const executableOption = alternative => {
+    const crossStoreCount=alternative.actions.filter(action=>action.type==='crossStore').reduce((sum,action)=>sum+action.count,0);
+    const extensionCount=alternative.actions.filter(action=>['overtime','extendShift'].includes(action.type)).reduce((sum,action)=>sum+action.count,0);
+    const selectedCandidates=candidates.slice(0,crossStoreCount).map(item=>({id:item.id,name:item.name,store:item.store_name,position:item.position,hourlyRate:item.hourly_rate}));
+    const extensions=existingShifts.slice(0,extensionCount).map(item=>({shiftId:item.id,employeeId:item.employeeId,name:item.name,position:item.position,hours:2,endAt:item.endAt}));
+    const checks = [
+      {code:'PLAN_POLICY',name:'方案硬规则',passed:alternative.compliance.passed,blocking:true,evidence:alternative.compliance.violations.map(item=>item.detail).join('；')||'方案未触发硬规则'},
+      {code:'BUDGET',name:'活动预算',passed:alternative.impact.addedCost<=budgetRemaining,blocking:true,evidence:`新增成本 ¥${alternative.impact.addedCost.toFixed(0)}，可用预算 ¥${budgetRemaining.toFixed(0)}`},
+      {code:'SKILL',name:'技能匹配',passed:selectedCandidates.length===crossStoreCount,blocking:true,evidence:`需要 ${crossStoreCount} 名跨店人员，匹配 ${selectedCandidates.length} 名`},
+      {code:'SHIFT_CONFLICT',name:'班次冲突',passed:true,blocking:true,evidence:'跨店候选人当日无其他有效班次'},
+      {code:'WORK_HOURS',name:'单日工时',passed:extensions.every(item=>item.hours<=2),blocking:true,evidence:`延长班次 ${extensions.length} 人，每人 2h`},
+      {code:'COVERAGE_TARGET',name:'覆盖率目标',passed:alternative.impact.coverageAfter>=goals.minimumCoveragePct,blocking:false,evidence:`预计覆盖率 ${alternative.impact.coverageAfter}%，目标 ${goals.minimumCoveragePct}%`},
+      {code:'CONSENT',name:'员工授权',passed:true,blocking:true,evidence:'执行后进入员工确认队列'}
+    ];
+    return {id:alternative.id,name:alternative.name,actions:alternative.actions,candidates:selectedCandidates,extensions,
+      addedHeadcount:selectedCandidates.length,affectedEmployees:alternative.impact.affectedEmployees,
+      coverage:alternative.impact.coverageAfter,cost:alternative.impact.addedCost,checks,accountId:event.labor_account_id};
+  };
+  const alternatives=rawAlternatives.map(alternative=>({...alternative,executionOption:executableOption(alternative)}));
   const recommended = alternatives.find(plan => plan.recommended) || alternatives.find(plan => plan.compliance.passed);
   if (!recommended) throw new DomainError('没有可通过硬性合规规则的候选方案', 409, 'NO_COMPLIANT_PLAN');
-  const supportHours = 4;
-  const budgetAllowed = Math.min(event.budget - event.spent, goals.budgetCeiling);
-  const chosen = [];
-  let candidateCost = 0;
-  for (const candidate of candidates.slice(0, gap)) {
-    const nextCost = candidate.hourly_rate * supportHours;
-    if (candidateCost + nextCost <= budgetAllowed) {
-      chosen.push(candidate);
-      candidateCost += nextCost;
-    }
-  }
-  const cost = candidateCost;
-  const budgetRemaining = event.budget - event.spent;
-  const projectedCoverage = Math.min(100,Math.round((currentShifts+chosen.length)/event.required_headcount*100));
-  const checks = [
-    { code:'BUDGET',name:'活动预算',passed:cost <= budgetRemaining,evidence:`新增成本 ¥${cost.toFixed(0)}，可用预算 ¥${budgetRemaining.toFixed(0)}` },
-    { code:'SKILL',name:'技能匹配',passed:chosen.every(item => item.skills.length > 0),evidence:`${chosen.length} 名候选人均有有效技能` },
-    { code:'SHIFT_CONFLICT',name:'班次冲突',passed:true,evidence:'候选人当日无其他有效班次' },
-    { code:'WORK_HOURS',name:'单日工时',passed:supportHours <= 10,evidence:`支援班次 ${supportHours}h，阈值 10h` },
-    { code:'COVERAGE_TARGET',name:'覆盖率目标',passed:projectedCoverage >= goals.minimumCoveragePct,evidence:`预计覆盖率 ${projectedCoverage}%，目标 ${goals.minimumCoveragePct}%` },
-    { code:'CONSENT',name:'员工授权',passed:true,evidence:'执行后进入员工确认队列' }
-  ];
+  const option = recommended.executionOption;
   const intent = { ...goals, eventId, observed:{ currentShifts, required:event.required_headcount, gap }, source:process.env.OPENAI_API_KEY ? 'model-assisted' : 'deterministic-domain-engine' };
-  const option = { id:recommended.id, name:recommended.name, actions:recommended.actions, candidates:chosen.map(item => ({ id:item.id,name:item.name,store:item.store_name,position:item.position,hourlyRate:item.hourly_rate })), addedHeadcount:chosen.length, coverage:projectedCoverage, cost, checks, accountId:event.labor_account_id };
   const planId = randomUUID();
   const stateTrace = buildStateTrace();
   db.prepare(`INSERT INTO workforce_plans(id,tenant_id,event_id,prompt,intent_json,option_json,alternatives_json,state_trace_json,modules_json,status,created_by,created_at)
     VALUES(?,?,?,?,?,?,?,?,?,'proposed',?,?)`).run(planId, user.tenantId, eventId, prompt.trim(), JSON.stringify(intent), JSON.stringify(option), JSON.stringify(alternatives), JSON.stringify(stateTrace), JSON.stringify(WFM_MODULES), user.id, now());
-  runCompliance(db, user, 'workforce_plan', planId, checks);
-  writeAudit(db, user.tenantId, user.id, 'plan.generated', 'workforce_plan', planId, { gap, candidates:chosen.length, cost });
+  runCompliance(db, user, 'workforce_plan', planId, option.checks);
+  writeAudit(db, user.tenantId, user.id, 'plan.generated', 'workforce_plan', planId, { gap, candidates:option.candidates.length, cost:option.cost });
   return { id:planId, intent, option, alternatives, stateTrace, modules:WFM_MODULES };
 }
 
@@ -329,17 +329,22 @@ export function executePlan(db, user, planId) {
   if (plan.status === 'executed') return { id:planId, idempotent:true };
   if (plan.status !== 'proposed') throw new DomainError('方案当前不可执行', 409);
   const option = JSON.parse(plan.option_json);
-  const failed = option.checks.find(check => !check.passed);
+  const failed = option.checks.find(check => !check.passed && check.blocking !== false);
   if (failed) throw new DomainError(`合规检查未通过：${failed.evidence}`, 409, 'COMPLIANCE_FAILED');
   const event = db.prepare('SELECT * FROM events WHERE id=?').get(plan.event_id);
   return withTransaction(db, () => {
     const insertShift = db.prepare(`INSERT INTO shifts(id,tenant_id,employee_id,store_id,event_id,shift_date,start_at,end_at,role_required,source,status,labor_account_id,created_at)
       VALUES(?,?,?,?,?,?,?,?,?,'ai_plan','confirmed',?,?)`);
     option.candidates.forEach(candidate => insertShift.run(randomUUID(), user.tenantId, candidate.id, event.store_id, event.id, event.event_date, '12:00', '16:00', candidate.position, event.labor_account_id, now()));
+    option.extensions.forEach(extension => {
+      const [hour,minute]=extension.endAt.split(':').map(Number);
+      const endAt=`${String((hour+extension.hours)%24).padStart(2,'0')}:${String(minute).padStart(2,'0')}`;
+      db.prepare("UPDATE shifts SET end_at=?,source='manager_selected_plan' WHERE id=? AND event_id=?").run(endAt,extension.shiftId,event.id);
+    });
     db.prepare("UPDATE workforce_plans SET status='executed',confirmed_by=?,confirmed_at=? WHERE id=?").run(user.id, now(), planId);
     db.prepare("UPDATE events SET status='scheduled' WHERE id=?").run(event.id);
     writeAudit(db, user.tenantId, user.id, 'plan.executed', 'workforce_plan', planId, { addedShifts:option.candidates.length, cost:option.cost });
-    return { id:planId, addedShifts:option.candidates.length, option };
+    return { id:planId, addedShifts:option.candidates.length,extendedShifts:option.extensions.length,option };
   });
 }
 

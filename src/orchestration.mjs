@@ -105,6 +105,23 @@ export function getAgentRun(db,user,id) {
   return {...run,intent:run.intent?JSON.parse(run.intent):null,steps};
 }
 
+export function selectAgentPlan(db,user,id,optionId) {
+  requireManager(user);
+  const run=db.prepare(`SELECT * FROM agent_runs WHERE id=? AND tenant_id=?`).get(id,user.tenantId);
+  if(!run)throw Object.assign(new Error('Agent 运行记录不存在'),{status:404,code:'NOT_FOUND'});
+  if(run.status!=='AWAITING_CONFIRMATION')throw Object.assign(new Error('当前运行不可切换方案'),{status:409,code:'INVALID_AGENT_STATE'});
+  const plan=db.prepare(`SELECT * FROM workforce_plans WHERE id=? AND tenant_id=?`).get(run.plan_id,user.tenantId);
+  const alternative=JSON.parse(plan.alternatives_json||'[]').find(item=>item.id===optionId);
+  if(!alternative)throw Object.assign(new Error('候选方案不存在'),{status:404,code:'OPTION_NOT_FOUND'});
+  const option=alternative.executionOption;
+  db.prepare('UPDATE workforce_plans SET option_json=? WHERE id=?').run(JSON.stringify(option),plan.id);
+  db.prepare(`INSERT INTO decision_feedback(id,tenant_id,plan_id,user_id,action,reason,created_at) VALUES(?,?,?,?,?,?,?)`)
+    .run(randomUUID(),user.tenantId,plan.id,user.id,'selected_alternative',optionId,now());
+  db.prepare(`INSERT INTO agent_steps(id,run_id,sequence,state,tool_name,input_json,output_json,duration_ms,status,created_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?)`).run(randomUUID(),id,900,'AWAITING_CONFIRMATION','select_plan',JSON.stringify({optionId}),JSON.stringify(option),0,'completed',now());
+  return {runId:id,planId:plan.id,option,alternative};
+}
+
 export function confirmAgentRun(db,user,id) {
   requireManager(user);
   const run = db.prepare(`SELECT * FROM agent_runs WHERE id=? AND tenant_id=?`).get(id,user.tenantId);
