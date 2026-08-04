@@ -12,7 +12,7 @@ async function body(req){const parts=[];let n=0;for await(const x of req){n+=x.l
 function match(path,pattern){const keys=[];const re=new RegExp('^'+pattern.replace(/:([\w]+)/g,(_,k)=>(keys.push(k),'([^/]+)'))+'$');const m=path.match(re);return m&&Object.fromEntries(keys.map((k,i)=>[k,decodeURIComponent(m[i+1])]));}
 async function api(req,res,path){let p,b;
  if(req.method==='GET'&&path==='/api/dashboard')return json(res,200,{ok:true,data:wfm.dashboard(db)});
- if(req.method==='GET'&&path==='/api/metadata')return json(res,200,{ok:true,data:wfm.metadata(db),ai:{configured:isAiConfigured(),model:MODEL}});
+ if(req.method==='GET'&&path==='/api/metadata')return json(res,200,{ok:true,data:{...wfm.metadata(db),ai:{configured:isAiConfigured(),model:MODEL}}});
  if(req.method==='POST'&&path==='/api/demo/reset')return json(res,200,{ok:true,data:resetDatabase(db)});
  if(req.method==='GET'&&path==='/api/rules')return json(res,200,{ok:true,data:wfm.activeRules(db)});
  if(req.method==='POST'&&path==='/api/rules/parse'){b=await body(req);let parsed,source='gaia_agent';try{const ai=await parseRulesWithAgent(String(b.text||''),wfm.metadata(db));parsed=wfm.deterministicParse(String(b.text||''),db);parsed.summary=ai.summary;for(const item of parsed.items){const a=ai.items?.find(x=>x.code===item.code);if(a&&a.value!==undefined&&Number(a.confidence)>=.7){item.value=a.value;item.confidence=a.confidence;}}parsed.unresolved=[...new Set([...parsed.unresolved,...(ai.unresolved||[])])];}catch(e){source='deterministic_fallback';parsed=wfm.deterministicParse(String(b.text||''),db);parsed.fallbackReason=e.message;}return json(res,201,{ok:true,data:wfm.saveDraft(db,String(b.text||''),parsed,source)});}
