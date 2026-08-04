@@ -10,7 +10,7 @@
 - 候选评分、风险与基于真实数字的推荐理由
 - 确认前按最新规则二次校验，规则变化后自动废弃并重新推荐
 - 调剂成本实时计算并归属劳动力账户
-- 公司 Gaia OpenAI Responses API，10 秒超时、重试一次、明确兜底
+- 公司 Gaia OpenAI Responses API，45 秒超时、重试一次、明确兜底
 - 一键重置可重复演示数据
 - 员工档案、技能、跨店资格、合同工时和排班偏好真实维护
 - 员工请假申请、主管审批与排班不可用时段联动
@@ -56,6 +56,7 @@ npm start
 export OPENAI_BASE_URL="https://coding.gaiaworks.net/openai/v1"
 export CODEX_API_KEY="你的公司内部 API Key"
 export OPENAI_MODEL="gpt-5.5"
+export OPENAI_TIMEOUT_MS="45000"
 ```
 
 公司内部网关使用 `OPENAI_BASE_URL`、`CODEX_API_KEY` 和 `OPENAI_MODEL`。系统会调用 `${OPENAI_BASE_URL}/responses`，密钥只应配置在运行环境中，不得写入代码或提交到 Git。使用 OpenAI 官方地址时也兼容 `OPENAI_API_KEY`，且要求密钥以 `sk-` 开头。

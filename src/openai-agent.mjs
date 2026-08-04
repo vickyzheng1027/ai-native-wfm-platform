@@ -2,14 +2,15 @@ const baseUrl=()=>String(process.env.OPENAI_BASE_URL||'https://coding.gaiaworks.
 const apiKey=()=>String(process.env.CODEX_API_KEY||process.env.OPENAI_API_KEY||'').trim();
 export const MODEL=process.env.OPENAI_MODEL||'gpt-5.5';
 export const isAiConfigured=()=>Boolean(apiKey());
+export const MODEL_TIMEOUT_MS=Math.max(10000,Number(process.env.OPENAI_TIMEOUT_MS||45000));
 function outputText(data){return data.output_text||data.output?.flatMap(x=>x.content||[]).find(x=>x.type==='output_text')?.text||'';}
 async function once(input,instructions,schema,schemaName){
  const payload={model:MODEL,store:false,reasoning:{effort:'low'},instructions,input,text:{format:{type:'json_schema',name:schemaName,strict:true,schema}}};
- const response=await fetch(`${baseUrl()}/responses`,{method:'POST',headers:{Authorization:`Bearer ${apiKey()}`,'Content-Type':'application/json'},body:JSON.stringify(payload),signal:AbortSignal.timeout(10000)});
+ let response;try{response=await fetch(`${baseUrl()}/responses`,{method:'POST',headers:{Authorization:`Bearer ${apiKey()}`,'Content-Type':'application/json'},body:JSON.stringify(payload),signal:AbortSignal.timeout(MODEL_TIMEOUT_MS)});}catch(e){if(e.name==='TimeoutError'||e.name==='AbortError')throw new Error(`公司模型在 ${Math.round(MODEL_TIMEOUT_MS/1000)} 秒内未返回结果`);throw new Error(`无法连接公司模型网关：${e.message}`);}
  let data;try{data=await response.json();}catch{throw new Error(`模型网关返回了非 JSON 响应（HTTP ${response.status}）`);}
  if(!response.ok)throw new Error(data.error?.message||`模型网关调用失败（HTTP ${response.status}）`);const text=outputText(data);if(!text)throw new Error('模型未返回结构化内容');try{return JSON.parse(text);}catch{throw new Error('模型返回内容不是有效 JSON');}
 }
-async function withRetry(input,instructions,schema,schemaName){if(!isAiConfigured())throw new Error('未配置公司模型凭证 CODEX_API_KEY');let last;for(let i=0;i<2;i++){try{return await once(input,instructions,schema,schemaName);}catch(e){last=e;}}throw last;}
+async function withRetry(input,instructions,schema,schemaName){if(!isAiConfigured())throw new Error('未配置公司模型凭证 CODEX_API_KEY');let last;const started=Date.now();for(let i=0;i<2;i++){try{return {...await once(input,instructions,schema,schemaName),agentMeta:{model:MODEL,attempts:i+1,durationMs:Date.now()-started}};}catch(e){last=e;}}throw new Error(`${last.message}（已重试 1 次）`);}
 const demandItem={type:'object',additionalProperties:false,properties:{storeCode:{type:'string'},date:{type:'string'},startTime:{type:'string'},endTime:{type:'string'},role:{type:'string'},requiredCount:{type:'integer'},forecastTraffic:{type:'number'},forecastSales:{type:'number'}},required:['storeCode','date','startTime','endTime','role','requiredCount','forecastTraffic','forecastSales']};
 const demandSchema={type:'object',additionalProperties:false,properties:{items:{type:'array',items:demandItem},unresolved:{type:'array',items:{type:'string'}},summary:{type:'string'}},required:['items','unresolved','summary']};
 const ruleSchema={type:'object',additionalProperties:false,properties:{items:{type:'array',items:{type:'object',additionalProperties:false,properties:{code:{type:'string',enum:['MONTHLY_HOURS','CONSECUTIVE_DAYS','SKILL_REQUIRED','CROSS_STORE_REQUIRED','TRAVEL_COST_LIMIT']},value:{anyOf:[{type:'number'},{type:'boolean'},{type:'string'}]},confidence:{type:'number'}},required:['code','value','confidence']}},unresolved:{type:'array',items:{type:'string'}},summary:{type:'string'}},required:['items','unresolved','summary']};

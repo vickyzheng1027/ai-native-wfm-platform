@@ -15,6 +15,8 @@ services:
         value: gpt-5.5
       - key: OPENAI_BASE_URL
         value: https://coding.gaiaworks.net/openai/v1
+      - key: OPENAI_TIMEOUT_MS
+        value: 45000
       - key: CODEX_API_KEY
         sync: false
       - key: DATABASE_PATH
