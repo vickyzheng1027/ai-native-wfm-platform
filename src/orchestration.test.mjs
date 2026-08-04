@@ -57,6 +57,22 @@ test('只有 Codex 凭证时自动使用确定性编排并生成可确认方案'
   }
 });
 
+test('公司 Responses 网关配置会启用大模型编排模式',()=>{
+  const originalBase=process.env.OPENAI_BASE_URL;
+  const originalCodexKey=process.env.CODEX_API_KEY;
+  process.env.OPENAI_BASE_URL='https://coding.gaiaworks.net/openai/v1';
+  process.env.CODEX_API_KEY='cpx_test_key';
+  try{
+    const db=createDatabase(':memory:');
+    const context=operationsContext(db,managerUser);
+    assert.equal(context.ai.configured,true);
+    assert.equal(context.ai.mode,'openai');
+  }finally{
+    if(originalBase===undefined)delete process.env.OPENAI_BASE_URL;else process.env.OPENAI_BASE_URL=originalBase;
+    if(originalCodexKey===undefined)delete process.env.CODEX_API_KEY;else process.env.CODEX_API_KEY=originalCodexKey;
+  }
+});
+
 test('无 OpenAI Key 时员工自然语言由确定性引擎解析',async()=>{
   const original=process.env.OPENAI_API_KEY;
   delete process.env.OPENAI_API_KEY;

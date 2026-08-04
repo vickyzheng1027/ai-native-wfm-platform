@@ -12,8 +12,10 @@ services:
       - key: NODE_ENV
         value: production
       - key: OPENAI_MODEL
-        value: gpt-5.6-terra
-      - key: OPENAI_API_KEY
+        value: gpt-5.5
+      - key: OPENAI_BASE_URL
+        value: https://coding.gaiaworks.net/openai/v1
+      - key: CODEX_API_KEY
         sync: false
       - key: DATABASE_PATH
         value: /tmp/ai-native-wfm-platform/wfm.db

@@ -312,7 +312,7 @@ export function generatePlan(db, user, prompt, eventId = 'event-member-day') {
   const recommended = alternatives.find(plan => plan.recommended) || alternatives.find(plan => plan.compliance.passed);
   if (!recommended) throw new DomainError('没有可通过硬性合规规则的候选方案', 409, 'NO_COMPLIANT_PLAN');
   const option = recommended.executionOption;
-  const intent = { ...goals, eventId, observed:{ currentShifts, required:event.required_headcount, gap }, source:process.env.OPENAI_API_KEY ? 'model-assisted' : 'deterministic-domain-engine' };
+  const intent = { ...goals, eventId, observed:{ currentShifts, required:event.required_headcount, gap }, source:(process.env.CODEX_API_KEY||process.env.OPENAI_API_KEY) ? 'model-assisted' : 'deterministic-domain-engine' };
   const planId = randomUUID();
   const stateTrace = buildStateTrace();
   db.prepare(`INSERT INTO workforce_plans(id,tenant_id,event_id,prompt,intent_json,option_json,alternatives_json,state_trace_json,modules_json,status,created_by,created_at)

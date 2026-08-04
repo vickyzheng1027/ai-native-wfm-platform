@@ -1,14 +1,21 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { runWorkforceAgent } from './openai-agent.mjs';
+import { runWorkforceAgent, isAiConfigured } from './openai-agent.mjs';
 
 test('OpenAI Agent 真实工具循环只执行白名单工具并解析严格结构输出',async()=>{
   const originalFetch=globalThis.fetch;
   const originalKey=process.env.OPENAI_API_KEY;
-  process.env.OPENAI_API_KEY='test-key';
+  const originalCodexKey=process.env.CODEX_API_KEY;
+  const originalBaseUrl=process.env.OPENAI_BASE_URL;
+  process.env.OPENAI_BASE_URL='https://coding.gaiaworks.net/openai/v1';
+  process.env.CODEX_API_KEY='cpx_test_key';
+  delete process.env.OPENAI_API_KEY;
   let call=0;
   const called=[];
-  globalThis.fetch=async(_url,options)=>{
+  globalThis.fetch=async(url,options)=>{
+    assert.equal(url,'https://coding.gaiaworks.net/openai/v1/responses');
+    assert.equal(options.headers.Authorization,'Bearer cpx_test_key');
+    assert.equal(isAiConfigured(),true);
     const body=JSON.parse(options.body);call+=1;
     assert.equal(body.tools.every(tool=>tool.strict===true),true);
     if(call===1)return new Response(JSON.stringify({id:'resp-1',output:[
@@ -35,5 +42,7 @@ test('OpenAI Agent 真实工具循环只执行白名单工具并解析严格结�
   }finally{
     globalThis.fetch=originalFetch;
     if(originalKey===undefined)delete process.env.OPENAI_API_KEY;else process.env.OPENAI_API_KEY=originalKey;
+    if(originalCodexKey===undefined)delete process.env.CODEX_API_KEY;else process.env.CODEX_API_KEY=originalCodexKey;
+    if(originalBaseUrl===undefined)delete process.env.OPENAI_BASE_URL;else process.env.OPENAI_BASE_URL=originalBaseUrl;
   }
 });

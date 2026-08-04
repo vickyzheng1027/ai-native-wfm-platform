@@ -1,5 +1,18 @@
-const API_URL = 'https://api.openai.com/v1/responses';
-const DEFAULT_MODEL = process.env.OPENAI_MODEL || 'gpt-5.6-terra';
+const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
+const DEFAULT_MODEL = process.env.OPENAI_MODEL || 'gpt-5.5';
+
+function configuration() {
+  const baseUrl=String(process.env.OPENAI_BASE_URL||DEFAULT_BASE_URL).replace(/\/+$/,'');
+  const apiKey=String(process.env.CODEX_API_KEY||process.env.OPENAI_API_KEY||'').trim();
+  let hostname;
+  try{hostname=new URL(baseUrl).hostname}catch{throw Object.assign(new Error('OPENAI_BASE_URL 格式无效'),{status:500,code:'INVALID_AI_BASE_URL'})}
+  return {baseUrl,apiUrl:`${baseUrl}/responses`,apiKey,isOfficial:hostname==='api.openai.com'};
+}
+
+export function isAiConfigured() {
+  const config=configuration();
+  return Boolean(config.apiKey)&&(!config.isOfficial||/^sk-/.test(config.apiKey));
+}
 
 const toolDefinitions = [
   ['get_workforce_context','读取活动、人员、班次、请假、预算和账户上下文'],
@@ -21,11 +34,11 @@ const resultSchema = {
 };
 
 async function request(body) {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) throw Object.assign(new Error('尚未配置 OPENAI_API_KEY，真实 AI Agent 不可用'),{ status:503,code:'OPENAI_NOT_CONFIGURED' });
-  const response = await fetch(API_URL,{ method:'POST',headers:{ Authorization:`Bearer ${apiKey}`,'Content-Type':'application/json' },body:JSON.stringify(body),signal:AbortSignal.timeout(45000) });
+  const config=configuration();
+  if (!isAiConfigured()) throw Object.assign(new Error('尚未配置可用于当前大模型网关的 API Key'),{ status:503,code:'OPENAI_NOT_CONFIGURED' });
+  const response = await fetch(config.apiUrl,{ method:'POST',headers:{ Authorization:`Bearer ${config.apiKey}`,'Content-Type':'application/json' },body:JSON.stringify(body),signal:AbortSignal.timeout(45000) });
   const data = await response.json();
-  if (!response.ok) throw Object.assign(new Error(data.error?.message || 'OpenAI API 调用失败'),{ status:502,code:'OPENAI_API_ERROR' });
+  if (!response.ok) throw Object.assign(new Error(data.error?.message || '大模型网关调用失败'),{ status:502,code:'OPENAI_API_ERROR' });
   return data;
 }
 
