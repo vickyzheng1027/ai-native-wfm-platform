@@ -1,166 +1,43 @@
-export const AI_STATES = [
-  'UNDERSTANDING', 'COLLECTING_CONTEXT', 'CHECKING_COMPLIANCE',
-  'GENERATING_OPTIONS', 'SIMULATING_IMPACT', 'AWAITING_CONFIRMATION',
-  'EXECUTING', 'COMPLETED', 'LEARNING'
-];
+import { randomUUID } from 'node:crypto';
+import { parseJson, transaction } from './db.mjs';
 
-export const WFM_MODULES = [
-  { id:'hr', name:'人事管理' }, { id:'schedule', name:'智能排班' },
-  { id:'attendance', name:'考勤管理' }, { id:'timecalc', name:'工时计算' },
-  { id:'leave', name:'假期计算' }, { id:'timebank', name:'工时银行' },
-  { id:'payroll', name:'薪资模块' }, { id:'account', name:'劳动力账户' },
-  { id:'analytics', name:'人效报表' }
-];
+const now=()=>new Date().toISOString();
+const value=row=>parseJson(row.value_json);
+const hoursBetween=(a,b)=>(new Date(b)-new Date(a))/3600000;
+export function activeRules(db){return db.prepare("SELECT * FROM rules WHERE status='active' ORDER BY category,name").all().map(r=>({...r,value:value(r)}));}
+export function metadata(db){return {stores:db.prepare('SELECT * FROM stores ORDER BY code').all(),roles:['收银','导购','理货'],ruleCategories:['排班','合规','成本']};}
 
-const DAY_MAP = {
-  周一:1, 星期一:1, 周二:2, 星期二:2, 周三:3, 星期三:3,
-  周四:4, 星期四:4, 周五:5, 星期五:5, 周六:6, 星期六:6,
-  周日:0, 周天:0, 星期日:0, 星期天:0
-};
-
-export function parseManagementIntent(text) {
-  const raw = String(text || '').trim();
-  const traffic = raw.match(/(?:客流|业务量)[^\d]{0,8}(?:增长|增加|提升)?\s*(\d{1,3}(?:\.\d+)?)\s*%/);
-  const budget = raw.match(/(?:预算|不超|控制在)[^\d]{0,8}(\d{3,8})/);
-  const coverage = raw.match(/覆盖率[^\d]{0,8}(\d{1,3}(?:\.\d+)?)\s*%/);
-  const store = raw.match(/([\u4e00-\u9fa5A-Za-z0-9]{1,10}(?:店|门店))/);
-  const leaveCount = raw.match(/(\d+)\s*名?员工请假/);
-  return {
-    raw,
-    action:'optimize_workforce',
-    store:store?.[1] || null,
-    trafficIncreasePct:traffic ? Number(traffic[1]) : 35,
-    budgetCeiling:budget ? Number(budget[1]) : 2000,
-    minimumCoveragePct:coverage ? Number(coverage[1]) : 95,
-    leaveCount:leaveCount ? Number(leaveCount[1]) : 0,
-    laborAccountRequired:/账户|归属|分摊/.test(raw),
-    complianceRequired:/合规|法规|工时|不超/.test(raw),
-    recognized:Boolean(store || traffic || budget || coverage || /排班|人力|支援|加班/.test(raw))
-  };
-}
-
-export function parseEmployeeIntent(text) {
-  const raw = String(text || '').trim();
-  let action = 'unknown';
-  if (/打卡|上班卡|下班卡/.test(raw)) action = 'punch';
-  if (/补卡|忘记打|漏打卡|没打卡/.test(raw)) action = 'attendance_correction';
-  else if (/加班|延长工作|多留/.test(raw)) action = 'overtime';
-  else if (/请假|休假|病假|事假|不能来/.test(raw)) action = 'leave';
-  else if (/换班|调班|对调/.test(raw)) action = 'swap';
-  else if (/偏好|周末.*休|不排班/.test(raw)) action = 'preference';
-  else if (/排班|我的班|班表|几点/.test(raw)) action = 'query_schedule';
-  const day = Object.keys(DAY_MAP).find(key => raw.includes(key));
-  return {
-    raw, action, dayOfWeek:day ? DAY_MAP[day] : null,
-    shift:/早班|上午/.test(raw) ? 'morning' : (/晚班|下午|夜班/.test(raw) ? 'evening' : null),
-    punchType:/下班/.test(raw) ? 'clock_out' : 'clock_in',
-    reason:raw.match(/(生病|发烧|感冒|家里有事|个人原因)/)?.[1] || null
-  };
-}
-
-export function createScenario(context, intent) {
-  const required = Math.max(1, Number(context.requiredHeadcount));
-  const beforeCount = Math.max(0, Number(context.currentHeadcount));
-  const afterLeaveCount = Math.max(0, beforeCount - intent.leaveCount);
-  return {
-    event:{
-      id:context.eventId, name:context.eventName, date:context.eventDate,
-      budget:Math.min(Number(context.budgetRemaining), intent.budgetCeiling),
-      trafficIncreasePct:intent.trafficIncreasePct,
-      laborAccountId:context.laborAccountId
-    },
-    coverage:{
-      required,
-      baselineBeforeLeave:Math.round(beforeCount / required * 100),
-      baselineAfterLeave:Math.round(afterLeaveCount / required * 100)
-    },
-    units:{
-      overtime:{ coverage:Math.round(100 / required), cost:Number(context.averageHourlyRate) * 2, label:'本店加班', hours:2 },
-      crossStore:{ coverage:Math.round(100 / required), cost:Number(context.averageSupportRate) * 4, label:'跨店支援', hours:4 },
-      extendShift:{ coverage:Math.round(100 / required / 2), cost:Number(context.averageHourlyRate) * 2, label:'延长班次', hours:2 }
-    },
-    rules:{ maxOvertimeHeadcount:3, minBudgetMargin:200, minimumCoveragePct:intent.minimumCoveragePct },
-    actuals:null
-  };
-}
-
-function simulateImpact(scenario, definition) {
-  let coverageGain = 0;
-  let addedCost = 0;
-  let affectedEmployees = 0;
-  let addedHours = 0;
-  const breakdown = definition.actions.map(action => {
-    const unit = scenario.units[action.type];
-    coverageGain += unit.coverage * action.count;
-    addedCost += unit.cost * action.count;
-    affectedEmployees += action.count;
-    addedHours += unit.hours * action.count;
-    return { type:action.type, label:unit.label, count:action.count, hours:unit.hours * action.count, cost:unit.cost * action.count };
-  });
-  return {
-    coverageBefore:scenario.coverage.baselineAfterLeave,
-    coverageAfter:Math.min(100, scenario.coverage.baselineAfterLeave + coverageGain),
-    addedCost:Number(addedCost.toFixed(2)),
-    budget:scenario.event.budget,
-    budgetRemaining:Number((scenario.event.budget - addedCost).toFixed(2)),
-    affectedEmployees, addedHours, breakdown
-  };
-}
-
-function checkPlan(scenario, definition, impact) {
-  const violations = [];
-  const highRisks = [];
-  const overtime = definition.actions.find(action => action.type === 'overtime');
-  if (overtime?.count > scenario.rules.maxOvertimeHeadcount) violations.push({ rule:'加班上限', detail:`本店加班 ${overtime.count} 人，超过阈值 ${scenario.rules.maxOvertimeHeadcount} 人` });
-  if (impact.budgetRemaining < 0) violations.push({ rule:'预算护栏', detail:`新增成本 ¥${impact.addedCost} 超出可用预算 ¥${scenario.event.budget}` });
-  else if (impact.budgetRemaining < scenario.rules.minBudgetMargin) highRisks.push({ rule:'预算余量', detail:`预算余量 ¥${impact.budgetRemaining}，需人工复核` });
-  if (definition.actions.some(action => action.type === 'crossStore')) highRisks.push({ rule:'员工同意', detail:'跨店支援须取得员工本人确认' });
-  if (impact.coverageAfter < scenario.rules.minimumCoveragePct) highRisks.push({ rule:'覆盖达标', detail:`预计覆盖率 ${impact.coverageAfter}%，未达目标 ${scenario.rules.minimumCoveragePct}%` });
-  return { passed:violations.length === 0, needManualReview:highRisks.length > 0, violations, highRisks };
-}
-
-export function generateCandidatePlans(scenario) {
-  const gap = Math.max(0, scenario.coverage.required - Math.round(scenario.coverage.baselineAfterLeave * scenario.coverage.required / 100));
-  const definitions = [
-    { id:'PLAN-OT', name:'仅本店加班', actions:[{ type:'overtime', count:Math.max(1, gap) }] },
-    { id:'PLAN-CS', name:'仅跨店支援', actions:[{ type:'crossStore', count:Math.max(1, gap) }] },
-    { id:'PLAN-MIX', name:'跨店支援 + 延长班次（组合）', actions:[{ type:'crossStore', count:Math.max(1, Math.ceil(gap / 2)) }, { type:'extendShift', count:Math.max(1, Math.floor(gap / 2)) }] }
+export function deterministicParse(text, db) {
+  const specs=[
+    ['MONTHLY_HOURS',/(?:月工时|每月工时)[^0-9]{0,8}(\d+)/,'小时'],
+    ['CONSECUTIVE_DAYS',/(?:连续工作|连续上班)[^0-9]{0,8}(\d+)/,'天'],
+    ['TRAVEL_COST_LIMIT',/(?:交通成本|交通费)[^0-9]{0,8}(\d+)/,'元']
   ];
-  const plans = definitions.map(definition => {
-    const impact = simulateImpact(scenario, definition);
-    return { ...definition, impact, compliance:checkPlan(scenario, definition, impact), recommended:false };
-  });
-  const eligible = plans.filter(plan => plan.compliance.passed && plan.impact.coverageAfter >= scenario.rules.minimumCoveragePct);
-  const recommended = [...(eligible.length ? eligible : plans.filter(plan => plan.compliance.passed))].sort((a,b) => a.impact.addedCost - b.impact.addedCost)[0];
-  if (recommended) recommended.recommended = true;
-  return plans;
+  const items=[];
+  for(const [code,re,unit] of specs){const m=text.match(re);if(m){const r=db.prepare('SELECT * FROM rules WHERE code=?').get(code);items.push({ruleId:r.id,code,name:r.name,category:r.category,value:Number(m[1]),unit,status:'confirmed',confidence:.88});}}
+  if(/技能/.test(text)){const r=db.prepare("SELECT * FROM rules WHERE code='SKILL_REQUIRED'").get();items.push({ruleId:r.id,code:r.code,name:r.name,category:r.category,value:true,unit:'',status:'confirmed',confidence:.9});}
+  if(/跨店/.test(text)){const r=db.prepare("SELECT * FROM rules WHERE code='CROSS_STORE_REQUIRED'").get();items.push({ruleId:r.id,code:r.code,name:r.name,category:r.category,value:true,unit:'',status:'confirmed',confidence:.9});}
+  const unresolved=[...text.matchAll(/([A-Z])门店/g)].map(m=>m[1]).filter(code=>!db.prepare('SELECT 1 FROM stores WHERE code=?').get(code)).map(code=>`${code}门店不存在，需要人工确认`);
+  return {items,unresolved,confidence:items.length?Math.min(...items.map(i=>i.confidence)):0};
 }
 
-export function buildStateTrace() {
-  return AI_STATES.slice(0, 6).map((state, index) => ({ state, sequence:index + 1 }));
+export function saveDraft(db,text,parsed,modelSource='deterministic_fallback'){
+ const id=randomUUID(); transaction(db,()=>{db.prepare('INSERT INTO rule_drafts VALUES(?,?,?,?,?,?,?)').run(id,text,parsed.unresolved.length?'needs_confirmation':'ready',modelSource,parsed.confidence,JSON.stringify(parsed.unresolved),now()); const q=db.prepare('INSERT INTO rule_draft_items VALUES(?,?,?,?,?,?,?,?,?,?,?)'); for(const i of parsed.items)q.run(randomUUID(),id,i.ruleId,i.code,i.name,i.category,JSON.stringify(i.value),i.unit,i.severity||'block',i.confidence,i.status);}); return getDraft(db,id);
 }
+export function getDraft(db,id){const d=db.prepare('SELECT * FROM rule_drafts WHERE id=?').get(id);return d&&{...d,unresolved:parseJson(d.unresolved_json,[]),items:db.prepare('SELECT * FROM rule_draft_items WHERE draft_id=?').all(id).map(i=>({...i,value:parseJson(i.value_json)}))};}
+export function updateDraftItem(db,draftId,itemId,body){const item=db.prepare('SELECT * FROM rule_draft_items WHERE id=? AND draft_id=?').get(itemId,draftId);if(!item)throw err('规则草稿项不存在',404);db.prepare("UPDATE rule_draft_items SET value_json=?,status='confirmed',confidence=1 WHERE id=?").run(JSON.stringify(body.value),itemId);return getDraft(db,draftId);}
+export function activateDraft(db,id){const draft=getDraft(db,id);if(!draft)throw err('规则草稿不存在',404);if(draft.unresolved.length)throw err('仍有待确认的门店或字段，请先修正规则文本',409);transaction(db,()=>{for(const item of draft.items){const r=db.prepare('SELECT * FROM rules WHERE id=?').get(item.rule_id);const version=r.version+1;db.prepare('UPDATE rules SET value_json=?,version=?,source_text=?,updated_at=? WHERE id=?').run(JSON.stringify(item.value),version,draft.input_text,now(),r.id);db.prepare('INSERT INTO rule_versions VALUES(?,?,?,?,?,?,?)').run(randomUUID(),r.id,version,JSON.stringify(item.value),'rule_agent','自然语言规则确认激活',now());}db.prepare("UPDATE rule_drafts SET status='activated' WHERE id=?").run(id);});return {draft:getDraft(db,id),rules:activeRules(db)};}
 
-export function computeTimeBank(plan) {
-  const overtimeHours = plan.actions.filter(action => ['overtime','extendShift'].includes(action.type)).reduce((sum, action) => sum + action.count * 2, 0);
-  const carryOverHours = Math.round(overtimeHours * 0.5 * 100) / 100;
-  return { overtimeHours, carryOverHours, payrollHours:overtimeHours - carryOverHours };
-}
-
-export function computeEfficiency({ actualSales, baselineSales, totalHours, laborCost, coveragePct }) {
-  return {
-    coveragePct,
-    salesPerHour:totalHours ? Math.round(actualSales / totalHours) : 0,
-    laborCostRate:actualSales ? Math.round(laborCost / actualSales * 1000) / 10 : 0,
-    roi:laborCost ? Math.round((actualSales - baselineSales) / laborCost * 10) / 10 : 0
-  };
-}
-
-export function buildThreeLayerFeedback({ plannedTraffic, actualTraffic, employeeName = '陈晨' }) {
-  const before = 1.28;
-  const variance = plannedTraffic ? (actualTraffic - plannedTraffic) / plannedTraffic : 0;
-  return [
-    { type:'business', key:'traffic_factor', before, after:Math.round(before * (1 + variance) * 100) / 100, evidence:`预测客流 ${plannedTraffic}，实际 ${actualTraffic}` },
-    { type:'employee', key:'support_reliability', before:82, after:88, evidence:`${employeeName}完成跨店支援任务` },
-    { type:'strategy', key:'voluntary_support_weight', before:0.60, after:0.72, evidence:'组合方案经管理者确认并顺利执行' }
-  ];
-}
+function ruleMap(db){return Object.fromEntries(activeRules(db).map(r=>[r.code,r]));}
+export function recommend(db,shortageId,reasoner){const shortage=db.prepare('SELECT s.*,st.name store_name FROM shortage_events s JOIN stores st ON st.id=s.store_id WHERE s.id=?').get(shortageId);if(!shortage)throw err('缺口不存在',404);const rules=ruleMap(db),hours=hoursBetween(shortage.start_at,shortage.end_at);const candidates=db.prepare('SELECT e.*,s.name store_name FROM employees e JOIN stores s ON s.id=e.store_id WHERE e.store_id<>?').all(shortage.store_id);const filtered={总候选:candidates.length,不可用:0,技能不符:0,无跨店资格:0,月工时超限:0,连续工作超限:0};const passed=[];
+for(const e of candidates){let why='';if(!e.available){filtered.不可用++;why='当前不可用';}else if(rules.SKILL_REQUIRED.value&&!parseJson(e.skills_json,[]).includes(shortage.role)){filtered.技能不符++;why='缺少岗位技能';}else if(rules.CROSS_STORE_REQUIRED.value&&!e.cross_store){filtered.无跨店资格++;why='无跨店资格';}else if(e.monthly_hours+hours>rules.MONTHLY_HOURS.value){filtered.月工时超限++;why=`预计月工时${e.monthly_hours+hours}小时，超过${rules.MONTHLY_HOURS.value}小时`;}else if(e.consecutive_days+1>rules.CONSECUTIVE_DAYS.value){filtered.连续工作超限++;why=`连续工作将达${e.consecutive_days+1}天`;}if(!why){const remaining=rules.MONTHLY_HOURS.value-e.monthly_hours-hours;const score=Math.max(0,100-(e.travel_cost*0.5)-(e.monthly_hours/10));passed.push({...e,hours,remaining,score:Number(score.toFixed(1)),risk:remaining<12?'中':'低'});}}
+passed.sort((a,b)=>b.score-a.score);transaction(db,()=>{db.prepare('DELETE FROM transfer_suggestions WHERE shortage_id=?').run(shortageId);const q=db.prepare('INSERT INTO transfer_suggestions VALUES(?,?,?,?,?,?,?,?,?,?)');passed.slice(0,Math.max(shortage.headcount+2,3)).forEach((e,i)=>{const defaultReason=`${e.name}具备${shortage.role}技能，调剂后月工时${e.monthly_hours+hours}小时，距上限剩余${e.remaining}小时，交通成本${e.travel_cost}元`;q.run(randomUUID(),shortageId,e.id,i+1,e.score,e.risk,reasoner?.(e,shortage)||defaultReason,'recommended',JSON.stringify(Object.fromEntries(Object.entries(rules).map(([k,r])=>[k,{version:r.version,value:r.value}]))),now());});db.prepare("UPDATE shortage_events SET status='recommended' WHERE id=?").run(shortageId);});return {shortage,filterSummary:{...filtered,符合条件:passed.length},suggestions:listSuggestions(db,shortageId)};}
+export function listSuggestions(db,id){return db.prepare('SELECT x.*,e.name employee_name,e.code employee_code,s.name source_store,e.monthly_hours,e.hourly_rate,e.travel_cost FROM transfer_suggestions x JOIN employees e ON e.id=x.employee_id JOIN stores s ON s.id=e.store_id WHERE x.shortage_id=? ORDER BY rank_no').all(id).map(x=>({...x,ruleSnapshot:parseJson(x.rule_snapshot_json)}));}
+export function createShortage(db,b){if(!b.storeId||!b.role||!b.startAt||!b.endAt||!b.headcount)throw err('请完整填写门店、岗位、时间和缺口人数',400);const id=randomUUID();db.prepare('INSERT INTO shortage_events VALUES(?,?,?,?,?,?,?,?)').run(id,b.storeId,b.role,b.startAt,b.endAt,Number(b.headcount),'open',now());return db.prepare('SELECT * FROM shortage_events WHERE id=?').get(id);}
+export function listShortages(db){return db.prepare('SELECT e.*,s.name store_name FROM shortage_events e JOIN stores s ON s.id=e.store_id ORDER BY e.created_at DESC').all();}
+export function confirmSuggestion(db,id){const s=db.prepare('SELECT x.*,e.hourly_rate,e.travel_cost,e.monthly_hours,sh.start_at,sh.end_at,sh.store_id,sh.role FROM transfer_suggestions x JOIN employees e ON e.id=x.employee_id JOIN shortage_events sh ON sh.id=x.shortage_id WHERE x.id=?').get(id);if(!s)throw err('推荐不存在',404);const current=ruleMap(db),hours=hoursBetween(s.start_at,s.end_at),checks=[{name:'岗位技能',passed:true},{name:'月工时上限',passed:s.monthly_hours+hours<=current.MONTHLY_HOURS.value,detail:`${s.monthly_hours}+${hours} ≤ ${current.MONTHLY_HOURS.value}`},{name:'连续工作天数',passed:true},{name:'交通成本',passed:s.travel_cost<=current.TRAVEL_COST_LIMIT.value,detail:`${s.travel_cost} ≤ ${current.TRAVEL_COST_LIMIT.value}`}];const passed=checks.every(c=>c.passed);if(!passed){db.prepare("UPDATE transfer_suggestions SET status='invalidated' WHERE id=?").run(id);const rerun=recommend(db,s.shortage_id);return {passed:false,checks,message:'规则已变化，原推荐不再合规，系统已自动重新推荐',rerun};}const transferId=randomUUID(),labor=hours*s.hourly_rate,total=labor+s.travel_cost;transaction(db,()=>{db.prepare('INSERT INTO transfer_orders VALUES(?,?,?,?,?,?)').run(transferId,s.shortage_id,id,s.employee_id,'confirmed',now());db.prepare('INSERT INTO compliance_checks VALUES(?,?,?,?,?,?)').run(randomUUID(),transferId,1,JSON.stringify(checks),JSON.stringify(Object.fromEntries(Object.entries(current).map(([k,r])=>[k,r.version]))),now());db.prepare('INSERT INTO cost_allocations VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(randomUUID(),transferId,hours,s.hourly_rate,labor,s.travel_cost,total,'来源门店人工账户','A门店补位账户',`${hours}小时 × ${s.hourly_rate}元/小时 + ${s.travel_cost}元交通费 = ${total}元`,now());db.prepare("UPDATE transfer_suggestions SET status='confirmed' WHERE id=?").run(id);db.prepare("UPDATE shortage_events SET status='staffed' WHERE id=?").run(s.shortage_id);});return {passed:true,transferId,checks,cost:db.prepare('SELECT * FROM cost_allocations WHERE transfer_id=?').get(transferId)};}
+export function validation(db,id){return {transfer:db.prepare('SELECT * FROM transfer_orders WHERE id=?').get(id),check:db.prepare('SELECT * FROM compliance_checks WHERE transfer_id=?').get(id),cost:db.prepare('SELECT * FROM cost_allocations WHERE transfer_id=?').get(id)};}
+export function optimizeRules(db){const rule=db.prepare("SELECT * FROM rules WHERE code='MONTHLY_HOURS'").get();const count=db.prepare("SELECT COUNT(*) n FROM transfer_suggestions WHERE status='invalidated'").get().n;const existing=db.prepare("SELECT * FROM rule_optimization_suggestions WHERE status='pending' AND rule_id=?").get(rule.id);if(existing)return existing;const id=randomUUID(),current=parseJson(rule.value_json),proposed=Math.max(160,current-5);db.prepare('INSERT INTO rule_optimization_suggestions VALUES(?,?,?,?,?,?,?,?,?)').run(id,rule.id,JSON.stringify({invalidatedRecommendations:count,employeeCount:db.prepare('SELECT COUNT(*) n FROM employees').get().n}),JSON.stringify(current),JSON.stringify(proposed),`近期有${count}条推荐因规则变化失效。建议将预警阈值提前到${proposed}小时，为管理者预留调整空间。`,'pending',now(),null);return db.prepare('SELECT * FROM rule_optimization_suggestions WHERE id=?').get(id);}
+export function decideOptimization(db,id,accept){const s=db.prepare('SELECT * FROM rule_optimization_suggestions WHERE id=?').get(id);if(!s)throw err('优化建议不存在',404);transaction(db,()=>{db.prepare('UPDATE rule_optimization_suggestions SET status=?,decided_at=? WHERE id=?').run(accept?'accepted':'rejected',now(),id);if(accept){const r=db.prepare('SELECT * FROM rules WHERE id=?').get(s.rule_id),version=r.version+1;db.prepare('UPDATE rules SET value_json=?,version=?,updated_at=? WHERE id=?').run(s.proposed_value_json,version,now(),r.id);db.prepare('INSERT INTO rule_versions VALUES(?,?,?,?,?,?,?)').run(randomUUID(),r.id,version,s.proposed_value_json,'optimization_agent','人工采纳规则优化建议',now());}});return db.prepare('SELECT * FROM rule_optimization_suggestions WHERE id=?').get(id);}
+export function dashboard(db){return {stores:db.prepare('SELECT COUNT(*) n FROM stores').get().n,employees:db.prepare('SELECT COUNT(*) n FROM employees').get().n,activeRules:db.prepare("SELECT COUNT(*) n FROM rules WHERE status='active'").get().n,openShortages:db.prepare("SELECT COUNT(*) n FROM shortage_events WHERE status!='staffed'").get().n,confirmedTransfers:db.prepare("SELECT COUNT(*) n FROM transfer_orders WHERE status='confirmed'").get().n,totalCost:db.prepare('SELECT COALESCE(SUM(total_cost),0) n FROM cost_allocations').get().n};}
+export const err=(message,status=400,code='DOMAIN_ERROR')=>Object.assign(new Error(message),{status,code});
