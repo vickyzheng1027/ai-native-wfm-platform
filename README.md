@@ -25,6 +25,8 @@ python3.12 backend/app.py --host 127.0.0.1 --port 4173
 
 打开 `http://127.0.0.1:4173`。
 
+现有 Render 服务如果仍是 Node runtime，可以继续使用原来的 `npm test` 和 `npm start`：`package.json` 会安装 Python 依赖、执行测试并启动 Python 后端。新建 Blueprint 服务则直接使用 `render.yaml` 的 Python runtime。
+
 测试账号：
 
 - 主管：`manager / Manager123!`
