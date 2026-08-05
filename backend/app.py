@@ -24,7 +24,11 @@ else:
     from .db import connect, rowdict, utcnow, verify_password
     from .services import ApiError, activate_plan, anomalies, approve_rule, attendance_overview, audit, automation_event, backup_database, create_rule, create_task, decide_employee_request, employee_agent, employee_insights, employee_list, overview, period_review, publish_plan, rule_list, save_employee, schedule_history, task_detail, update_anomaly
 
-ROOT=Path(__file__).parents[1];PUBLIC=ROOT/"public";DB=connect();RATE=defaultdict(deque)
+ROOT=Path(__file__).parents[1];PUBLIC=ROOT/"public"
+print(f"[startup] Python {sys.version.split()[0]}，开始初始化 SQLite",flush=True)
+DB=connect()
+print("[startup] SQLite 初始化完成",flush=True)
+RATE=defaultdict(deque)
 
 
 def json_default(value):
@@ -168,7 +172,10 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     parser=argparse.ArgumentParser();parser.add_argument("--host",default=os.getenv("HOST","0.0.0.0"));parser.add_argument("--port",type=int,default=int(os.getenv("PORT","4173")));args=parser.parse_args()
-    server=ThreadingHTTPServer((args.host,args.port),Handler);print(f"FlowStaff AI listening on http://{args.host}:{args.port}");server.serve_forever()
+    print(f"[startup] 正在绑定 {args.host}:{args.port}",flush=True)
+    server=ThreadingHTTPServer((args.host,args.port),Handler);server.daemon_threads=True
+    print(f"[startup] FlowStaff AI 已监听 http://{args.host}:{args.port}",flush=True)
+    server.serve_forever()
 
 
 if __name__=="__main__":main()

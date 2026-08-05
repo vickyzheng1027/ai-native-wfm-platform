@@ -5,7 +5,7 @@
   "description": "FlowStaff AI Render compatibility launcher",
   "scripts": {
     "test": "python3 -m pip install -r backend/requirements.txt && python3 -m unittest discover -s tests -v",
-    "start": "python3 backend/app.py --host 0.0.0.0 --port ${PORT:-4173}"
+    "start": "python3 -u backend/app.py"
   },
   "engines": {
     "node": ">=22"
