@@ -132,6 +132,56 @@ class FlowStaffTests(unittest.TestCase):
         self.assertEqual(sum(x["recommended"] for x in task["plans"]),1)
         self.assertNotEqual(task["plans"][0]["strategy"],task["plans"][1]["strategy"])
 
+    def test_schedule_task_forecasts_future_demand_instead_of_recommending_empty_plans(self):
+        result=create_task(self.db,self.manager,"请生成8月10日的排班，覆盖率目标95%","store_management")
+        for _ in range(100):
+            task=task_detail(self.db,self.manager,result["task_id"])
+            if task["status"] in ("completed","failed"):break
+            time.sleep(.02)
+        self.assertEqual(task["status"],"completed",task.get("error"))
+        self.assertEqual(len(task["plans"]),2)
+        self.assertTrue(all(plan["metrics"]["required"]>0 for plan in task["plans"]))
+        self.assertTrue(all(plan["shifts"] for plan in task["plans"]))
+        self.assertGreater(self.db.execute("SELECT COUNT(*) n FROM business_demands WHERE demand_date='2026-08-10'").fetchone()["n"],0)
+
+    def test_schedule_task_fails_when_no_demand_baseline_exists(self):
+        self.db.execute("DELETE FROM business_demands");self.db.commit()
+        result=create_task(self.db,self.manager,"请生成8月10日的排班","store_management")
+        for _ in range(100):
+            task=task_detail(self.db,self.manager,result["task_id"])
+            if task["status"] in ("completed","failed"):break
+            time.sleep(.02)
+        self.assertEqual(task["status"],"failed")
+        self.assertIn("历史岗位需求",task["error"])
+        self.assertEqual(task["plans"],[])
+
+    def test_schedule_plan_never_assigns_other_store_or_unavailable_employees(self):
+        result=create_task(self.db,self.manager,"请生成8月6日的排班","store_management")
+        for _ in range(100):
+            task=task_detail(self.db,self.manager,result["task_id"])
+            if task["status"] in ("completed","failed"):break
+            time.sleep(.02)
+        self.assertEqual(task["status"],"completed",task.get("error"))
+        unavailable={(x["employee_id"],x["event_date"]) for x in self.db.execute("SELECT employee_id,event_date FROM attendance WHERE event_type IN ('leave','absence')")}
+        for plan in task["plans"]:
+            self.assertTrue(plan["shifts"])
+            self.assertTrue(all(shift["store_id"]=="store-a" for shift in plan["shifts"]))
+            self.assertTrue(all((shift["employee_id"],shift["start_at"][:10]) not in unavailable for shift in plan["shifts"]))
+
+    def test_legacy_empty_plan_is_invalid_and_cannot_activate(self):
+        result=create_task(self.db,self.manager,"请生成8月6日的排班","store_management")
+        task_id=result["task_id"]
+        for _ in range(100):
+            task=task_detail(self.db,self.manager,task_id)
+            if task["status"] in ("completed","failed"):break
+            time.sleep(.02)
+        plan_id=task["plans"][0]["id"]
+        self.db.execute("DELETE FROM shifts WHERE plan_id=?",(plan_id,));self.db.execute("UPDATE schedule_plans SET metrics_json=? WHERE id=?",('{"required":0,"assigned":0,"coverage":0}',plan_id));self.db.commit()
+        invalid=next(plan for plan in task_detail(self.db,self.manager,task_id)["plans"] if plan["id"]==plan_id)
+        self.assertFalse(invalid["valid"])
+        with self.assertRaisesRegex(ApiError,"空方案不能选择生效"):
+            activate_plan(self.db,self.manager,plan_id)
+
     def test_activate_and_publish_are_separate_actions(self):
         result=create_task(self.db,self.manager,"8月6日至8月8日生成排班","store_management")
         for _ in range(100):

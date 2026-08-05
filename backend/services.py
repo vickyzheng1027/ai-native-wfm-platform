@@ -82,12 +82,54 @@ def attendance_overview(db,user,start,end):
 
 
 def parse_schedule_parameters(text):
-    date_matches=re.findall(r"(?:2026[-年])?(\d{1,2})[-月](\d{1,2})",text)
-    start=f"2026-{int(date_matches[0][0]):02d}-{int(date_matches[0][1]):02d}" if date_matches else "2026-08-06"
-    end=f"2026-{int(date_matches[-1][0]):02d}-{int(date_matches[-1][1]):02d}" if date_matches else "2026-08-08"
+    current_year=datetime.now().year;date_matches=re.findall(r"(?:(\d{4})[-年])?(\d{1,2})[-月](\d{1,2})日?",text)
+    normalized=[f"{int(year or current_year):04d}-{int(month):02d}-{int(day):02d}" for year,month,day in date_matches]
+    start=normalized[0] if normalized else f"{current_year}-08-06"
+    end=normalized[-1] if normalized else f"{current_year}-08-08"
     coverage=float(re.search(r"覆盖率[^\d]*(\d+(?:\.\d+)?)",text).group(1)) if re.search(r"覆盖率[^\d]*(\d+(?:\.\d+)?)",text) else 95
     cost=float(re.search(r"成本[^\d]*(\d+(?:\.\d+)?)%",text).group(1)) if re.search(r"成本[^\d]*(\d+(?:\.\d+)?)%",text) else 8
     return {"start_date":start,"end_date":end,"coverage_target":coverage,"cost_increase_limit":cost,"minimize_nights":"夜班" in text,"raw_constraints":[]}
+
+
+def task_store_id(db,user,params):
+    if user.get("store_id"):return user["store_id"]
+    store_code=params.get("store_code")
+    if store_code:
+        store=db.execute("SELECT id FROM stores WHERE code=? OR name=?",(store_code,store_code)).fetchone()
+        if store:return store["id"]
+    return "store-a"
+
+
+def ensure_demand_forecast(db,user,params):
+    store_id=task_store_id(db,user,params);start=params.get("start_date");end=params.get("end_date")
+    if not start or not end:raise ApiError("排班任务缺少开始和结束日期",422,"MISSING_SCHEDULE_DATES")
+    start_date=datetime.fromisoformat(start).date();end_date=datetime.fromisoformat(end).date()
+    if end_date<start_date or (end_date-start_date).days>31:raise ApiError("排班周期必须在 1 至 31 天内",422,"INVALID_SCHEDULE_RANGE")
+    existing=rows(db,"SELECT * FROM business_demands WHERE store_id=? AND demand_date BETWEEN ? AND ? ORDER BY demand_date,start_time",(store_id,start,end))
+    if existing:return existing,"existing"
+    baseline=rows(db,"SELECT * FROM business_demands WHERE store_id=? ORDER BY demand_date,start_time",(store_id,))
+    if not baseline:raise ApiError("当前门店没有可用于预测的历史岗位需求，请先录入业务需求",422,"NO_DEMAND_BASELINE")
+    requested_role=params.get("role");requested_headcount=params.get("headcount")
+    patterns={}
+    for demand in baseline:
+        if requested_role and demand["role"]!=requested_role:continue
+        patterns.setdefault(demand["role"],[]).append(demand)
+    if not patterns and requested_role:
+        patterns[requested_role]=baseline
+    generated=[];day=start_date
+    with transaction(db):
+        while day<=end_date:
+            weekend_factor=1.15 if day.weekday()>=5 else 1.0
+            for role,samples in patterns.items():
+                sample=samples[0];start_time=sample["start_time"];end_time=sample["end_time"]
+                average=sum(item["required_count"] for item in samples)/len(samples)
+                count=int(requested_headcount) if requested_headcount and (not requested_role or role==requested_role) else max(1,round(average*weekend_factor))
+                confidence=round(max(.65,min(.9,sum(item["confidence"] for item in samples)/len(samples)-.04)),2)
+                demand={"id":uid("demand"),"store_id":store_id,"demand_date":day.isoformat(),"start_time":start_time,"end_time":end_time,"role":role,"required_count":count,"confidence":confidence,"factors_json":dumps(["历史岗位需求基线","周末系数" if day.weekday()>=5 else "工作日系数","用户输入约束"]),"source":"statistical_forecast_v1","created_at":utcnow()}
+                db.execute("INSERT INTO business_demands VALUES(?,?,?,?,?,?,?,?,?,?,?)",tuple(demand.values()));generated.append(demand)
+            day+=timedelta(days=1)
+    if not generated:raise ApiError("未能形成有效岗位需求，请补充岗位和人数",422,"EMPTY_DEMAND_FORECAST")
+    return generated,"statistical_forecast_v1"
 
 
 def create_task(db,user,text,context="auto",trigger_event_id=None):
@@ -118,8 +160,14 @@ def employee_matches_role(employee,skills,role):
 
 
 def generate_plan(db,task,strategy):
-    params=loads(task["parameters_json"],{});demands=rows(db,"SELECT * FROM business_demands WHERE store_id=? AND demand_date BETWEEN ? AND ? ORDER BY demand_date,start_time",("store-a",params.get("start_date","2026-08-06"),params.get("end_date","2026-08-08")))
-    employees=employee_list(db,{"role":"admin","store_id":None});assigned=[];hours={};preference_hits=0;required=sum(x["required_count"] for x in demands)
+    params=loads(task["parameters_json"],{});store_id=params.get("resolved_store_id","store-a");demands=rows(db,"SELECT * FROM business_demands WHERE store_id=? AND demand_date BETWEEN ? AND ? ORDER BY demand_date,start_time",(store_id,params.get("start_date"),params.get("end_date")))
+    if not demands:raise ApiError("没有可执行的岗位需求，禁止生成空排班方案",422,"EMPTY_SCHEDULE_DEMAND")
+    employees=[employee for employee in employee_list(db,{"role":"admin","store_id":None}) if employee["store_id"]==store_id and employee["status"]=="active"]
+    unavailable={(item["employee_id"],item["event_date"]) for item in rows(db,"SELECT employee_id,event_date FROM attendance WHERE event_date BETWEEN ? AND ? AND event_type IN ('leave','absence')",(params.get("start_date"),params.get("end_date")))}
+    for request in rows(db,"SELECT employee_id,payload_json FROM employee_requests WHERE request_type='leave' AND status='approved'"):
+        payload=loads(request["payload_json"],{});leave_date=payload.get("leave_date") or payload.get("start_date")
+        if leave_date:unavailable.add((request["employee_id"],leave_date))
+    assigned=[];hours={};preference_hits=0;required=sum(x["required_count"] for x in demands)
     if cp_model and demands:
         model=cp_model.CpModel();variables={};candidate_meta={}
         for demand_index,demand in enumerate(demands):
@@ -127,13 +175,13 @@ def generate_plan(db,task,strategy):
             for slot in range(demand["required_count"]):
                 eligible=[]
                 for employee_index,employee in enumerate(employees):
+                    if (employee["id"],demand["demand_date"]) in unavailable:continue
                     if not employee_matches_role(employee,employee["skills"],demand["role"]):continue
                     variable=model.NewBoolVar(f"d{demand_index}s{slot}e{employee_index}");variables[demand_index,slot,employee_index]=variable;eligible.append(variable)
                     pref=employee["preferences"].get("ai_summary","");hit=("早班" in pref and int(demand["start_time"][:2])<12) or "班型灵活" in pref
-                    skill=max((x["proficiency"] for x in employee["skills"]),default=1);score=skill*100-int(employee["hourly_rate"]*(18 if strategy=="balanced" else 7))+((250 if strategy=="experience" else 70) if hit else 0)
+                    skill=max((x["proficiency"] for x in employee["skills"]),default=1);score=10000+skill*100-int(employee["hourly_rate"]*(18 if strategy=="balanced" else 7))+((250 if strategy=="experience" else 70) if hit else 0)
                     candidate_meta[demand_index,slot,employee_index]=(employee,duration,hit,score)
-                if not eligible:raise ApiError(f"{demand['demand_date']} {demand['role']} 无合规候选人",409,"NO_FEASIBLE_SCHEDULE")
-                model.Add(sum(eligible)==1)
+                if eligible:model.Add(sum(eligible)<=1)
         for employee_index,employee in enumerate(employees):
             by_date={}
             for (demand_index,slot,index),variable in variables.items():
@@ -156,6 +204,7 @@ def generate_plan(db,task,strategy):
         for demand in demands:
             candidates=[]
             for employee in employees:
+                if (employee["id"],demand["demand_date"]) in unavailable:continue
                 if not employee_matches_role(employee,employee["skills"],demand["role"]):continue
                 if any(x["employee_id"]==employee["id"] and x["date"]==demand["demand_date"] for x in assigned):continue
                 duration=(datetime.fromisoformat(demand["demand_date"]+"T"+demand["end_time"])-datetime.fromisoformat(demand["demand_date"]+"T"+demand["start_time"])).seconds/3600
@@ -165,6 +214,7 @@ def generate_plan(db,task,strategy):
                 candidates.append((score,employee,duration,hit))
             for score,employee,duration,hit in sorted(candidates,key=lambda x:x[0],reverse=True)[:demand["required_count"]]:
                 hours[employee["id"]]=hours.get(employee["id"],0)+duration;preference_hits+=int(hit);assigned.append({"employee_id":employee["id"],"employee_name":employee["name"],"store_id":demand["store_id"],"role":demand["role"],"date":demand["demand_date"],"start_at":f"{demand['demand_date']}T{demand['start_time']}:00+00:00","end_at":f"{demand['demand_date']}T{demand['end_time']}:00+00:00","score":round(score,1),"reason":["技能认证有效",f"排后周工时 {hours[employee['id']]:.0f}h","满足偏好" if hit else "覆盖优先"]})
+    if not assigned:raise ApiError("当前门店没有可满足岗位技能与可用性要求的员工，未生成空方案",409,"NO_ASSIGNABLE_EMPLOYEES")
     cost=sum((datetime.fromisoformat(x["end_at"])-datetime.fromisoformat(x["start_at"])).seconds/3600*next(e["hourly_rate"] for e in employees if e["id"]==x["employee_id"]) for x in assigned)
     coverage=round(len(assigned)/required*100,1) if required else 0
     return assigned,{"coverage":coverage,"cost":round(cost,2),"preference_rate":round(preference_hits/len(assigned)*100,1) if assigned else 0,"fairness_gap":round(max(hours.values())-min(hours.values()),1) if hours else 0,"risk_count":max(0,required-len(assigned)),"required":required,"assigned":len(assigned),"solver":solver_name}
@@ -176,12 +226,15 @@ def run_schedule_task(db,task_id,user):
         add_step(db,task_id,1,"目标理解","completed","已识别周期、覆盖目标、成本边界与特殊要求",f"intent=schedule_create; llm_enabled={client.enabled}",loads(task["parameters_json"],{}))
         sources=rows(db,"SELECT id,title,source_type FROM vector_documents ORDER BY source_type LIMIT 8")
         add_step(db,task_id,2,"RAG 数据检索","completed",f"已加载 {len(sources)} 条规则与组织知识",f"vector_sources={len(sources)}",{"citations":[x["id"] for x in sources]})
-        demands=db.execute("SELECT COUNT(*) n FROM business_demands WHERE store_id='store-a'").fetchone()["n"]
-        add_step(db,task_id,3,"需求预测","completed",f"已形成 {demands} 条分时岗位需求","engine=statistical_demand_v1",{"confidence_interval":"82%-93%"})
+        params=loads(task["parameters_json"],{});params["resolved_store_id"]=task_store_id(db,user,params);task["parameters_json"]=dumps(params);db.execute("UPDATE tasks SET parameters_json=? WHERE id=?",(task["parameters_json"],task_id));db.commit()
+        demands,demand_source=ensure_demand_forecast(db,user,params)
+        required_positions=sum(item["required_count"] for item in demands)
+        add_step(db,task_id,3,"需求预测","completed",f"已形成 {len(demands)} 条分时岗位需求，共 {required_positions} 个岗位","engine="+demand_source,{"demand_rows":len(demands),"required_positions":required_positions,"source":demand_source})
         generated=[]
         for name,strategy in (("均衡方案","balanced"),("员工体验优先方案","experience")):
             assigned,metrics=generate_plan(db,task,strategy);plan_id=uid("plan")
             generated.append((plan_id,name,strategy,assigned,metrics))
+        if not generated or any(item[4]["required"]<=0 for item in generated):raise ApiError("岗位需求为空，禁止创建推荐方案",422,"EMPTY_RECOMMENDATION")
         recommended=max(generated,key=lambda x:x[4]["coverage"]*2+x[4]["preference_rate"]*.35-x[4]["cost"]*.002)
         with transaction(db):
             for plan_id,name,strategy,assigned,metrics in generated:
@@ -204,7 +257,7 @@ def task_detail(db,user,task_id):
     task["steps"]=[{**x,"metrics":loads(x.pop("metrics_json"),{})} for x in rows(db,"SELECT * FROM task_steps WHERE task_id=? ORDER BY stage",(task_id,))]
     task["plans"]=[]
     for plan in rows(db,"SELECT * FROM schedule_plans WHERE task_id=? ORDER BY recommended DESC,name",(task_id,)):
-        plan["metrics"]=loads(plan.pop("metrics_json"),{});plan["explanation"]=loads(plan.pop("explanation_json"),{});plan["shifts"]=rows(db,"SELECT sh.*,e.name employee_name,e.code employee_code FROM shifts sh JOIN employees e ON e.id=sh.employee_id WHERE plan_id=? ORDER BY start_at,e.code",(plan["id"],));task["plans"].append(plan)
+        plan["metrics"]=loads(plan.pop("metrics_json"),{});plan["explanation"]=loads(plan.pop("explanation_json"),{});plan["shifts"]=rows(db,"SELECT sh.*,e.name employee_name,e.code employee_code FROM shifts sh JOIN employees e ON e.id=sh.employee_id WHERE plan_id=? ORDER BY start_at,e.code",(plan["id"],));plan["valid"]=plan["metrics"].get("required",0)>0 and len(plan["shifts"])>0;task["plans"].append(plan)
     return task
 
 
@@ -212,6 +265,8 @@ def activate_plan(db,user,plan_id):
     if user["role"] not in ("admin","manager"):raise ApiError("无方案激活权限",403,"FORBIDDEN")
     plan=db.execute("SELECT * FROM schedule_plans WHERE id=?",(plan_id,)).fetchone()
     if not plan:raise ApiError("方案不存在",404,"NOT_FOUND")
+    metrics=loads(plan["metrics_json"],{});shift_count=db.execute("SELECT COUNT(*) n FROM shifts WHERE plan_id=?",(plan_id,)).fetchone()["n"]
+    if metrics.get("required",0)<=0 or shift_count<=0:raise ApiError("空方案不能选择生效，请重新生成排班方案",409,"EMPTY_PLAN_NOT_ACTIVATABLE")
     with transaction(db):
         db.execute("UPDATE schedule_plans SET status='candidate' WHERE task_id=? AND status='active'",(plan["task_id"],));db.execute("UPDATE schedule_plans SET status='active',activated_at=? WHERE id=?",(utcnow(),plan_id))
     audit(db,user,"schedule.activate","schedule_plan",plan_id)
@@ -222,6 +277,7 @@ def publish_plan(db,user,plan_id):
     if user["role"] not in ("admin","manager"):raise ApiError("无班表发布权限",403,"FORBIDDEN")
     plan=db.execute("SELECT * FROM schedule_plans WHERE id=? AND status='active'",(plan_id,)).fetchone()
     if not plan:raise ApiError("请先选择生效方案，再独立执行发布",409,"PLAN_NOT_ACTIVE")
+    if db.execute("SELECT COUNT(*) n FROM shifts WHERE plan_id=?",(plan_id,)).fetchone()["n"]<=0:raise ApiError("空方案不能发布，请重新生成排班方案",409,"EMPTY_PLAN_NOT_PUBLISHABLE")
     with transaction(db):
         db.execute("UPDATE schedule_plans SET status='published',published_at=? WHERE id=?",(utcnow(),plan_id));db.execute("UPDATE shifts SET status='published',updated_at=? WHERE plan_id=?",(utcnow(),plan_id))
     audit(db,user,"schedule.publish","schedule_plan",plan_id,details={"compliance_rechecked":True})
