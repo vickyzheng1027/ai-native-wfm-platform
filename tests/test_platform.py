@@ -9,10 +9,15 @@ from backend.services import ApiError, activate_plan, anomalies, approve_rule, a
 
 class FlowStaffTests(unittest.TestCase):
     def setUp(self):
+        self.ai_environment={key:os.environ.pop(key,None) for key in ("OPENAI_API_KEY","CODEX_API_KEY")}
         self.db=connect(":memory:")
         self.manager=dict(self.db.execute("SELECT * FROM users WHERE username='manager'").fetchone())
         self.employee=dict(self.db.execute("SELECT * FROM users WHERE username='employee'").fetchone())
         self.admin=dict(self.db.execute("SELECT * FROM users WHERE username='admin'").fetchone())
+
+    def tearDown(self):
+        for key,value in self.ai_environment.items():
+            if value is not None:os.environ[key]=value
 
     def test_seed_contains_complete_business_data(self):
         self.assertEqual(self.db.execute("SELECT COUNT(*) n FROM employees").fetchone()["n"],12)
@@ -47,25 +52,22 @@ class FlowStaffTests(unittest.TestCase):
         self.assertGreater(result["summary"]["overtime_hours"],0)
 
     def test_intent_fallback_is_explicit_when_key_missing(self):
-        old=os.environ.pop("OPENAI_API_KEY",None);old2=os.environ.pop("CODEX_API_KEY",None)
-        try:
-            result=classify_intent(AIClient(self.db),self.manager,"请帮我安排8月8日排班")
-            self.assertEqual(result["mode"],"deterministic_fallback")
-            self.assertIn("未配置",result["fallback_reason"])
-        finally:
-            if old:os.environ["OPENAI_API_KEY"]=old
-            if old2:os.environ["CODEX_API_KEY"]=old2
+        result=classify_intent(AIClient(self.db),self.manager,"请帮我安排8月8日排班")
+        self.assertEqual(result["mode"],"deterministic_fallback")
+        self.assertIn("未配置",result["fallback_reason"])
 
     def test_rag_without_key_is_retrieval_only_not_fake_llm(self):
-        old=os.environ.pop("OPENAI_API_KEY",None);old2=os.environ.pop("CODEX_API_KEY",None)
-        try:
-            result=rag_answer(self.db,AIClient(self.db),self.manager,"周工时上限是多少")
-            self.assertEqual(result["mode"],"retrieval_only")
-            self.assertTrue(result["sources"])
-            self.assertTrue(result["citations"])
-        finally:
-            if old:os.environ["OPENAI_API_KEY"]=old
-            if old2:os.environ["CODEX_API_KEY"]=old2
+        result=rag_answer(self.db,AIClient(self.db),self.manager,"周工时上限是多少")
+        self.assertEqual(result["mode"],"retrieval_only")
+        self.assertTrue(result["sources"])
+        self.assertTrue(result["citations"])
+
+    def test_ai_client_detects_runtime_key_without_exposing_it(self):
+        os.environ["OPENAI_API_KEY"]="runtime-only-test-key"
+        client=AIClient(self.db)
+        self.assertTrue(client.enabled)
+        self.assertNotIn("runtime-only-test-key",client.base_url)
+        os.environ.pop("OPENAI_API_KEY")
 
     def test_schedule_task_generates_two_distinct_plans(self):
         result=create_task(self.db,self.manager,"请安排8月6日至8月8日的排班，覆盖率目标98%","store_management")
