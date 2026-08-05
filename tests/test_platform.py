@@ -36,6 +36,13 @@ class FlowStaffTests(unittest.TestCase):
         self.assertIn('[hidden]{display:none!important}',css)
         self.assertIn('loginView.hidden=true;appView.hidden=false',script)
 
+    def test_agent_understanding_uses_business_summary_and_collapses_debug_json(self):
+        script=(Path(__file__).parents[1]/"public"/"app.js").read_text(encoding="utf-8")
+        self.assertIn("AI 理解结果",script)
+        self.assertIn("尚未识别到具体业务目标",script)
+        self.assertIn('<details class="technical-details">',script)
+        self.assertNotIn('<h2>结构化理解</h2>',script)
+
     def test_passwords_are_pbkdf2_hashes(self):
         encoded=self.manager["password_hash"]
         self.assertTrue(encoded.startswith("pbkdf2_sha256$"))
