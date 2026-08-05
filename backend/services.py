@@ -17,6 +17,8 @@ try:
 except ImportError:
     cp_model = None
 
+AUTOMATION_ADMISSION_LOCK = threading.RLock()
+
 
 class ApiError(Exception):
     def __init__(self, message, status=400, code="BAD_REQUEST", details=None):
@@ -294,9 +296,13 @@ def automation_event(db,user,body):
     event_type=body.get("event_type");allowed={"employee_unavailable":90,"absence_reported":90,"leave_approved":90,"shift_vacancy":90,"demand_spike":75,"informational":10}
     if event_type not in allowed:raise ApiError("不支持的事件类型")
     event_id=uid("event");dedupe=body.get("dedupe_key") or event_id
-    try:db.execute("INSERT INTO automation_events VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(event_id,event_type,dedupe,body.get("store_id") or user.get("store_id"),body.get("employee_id"),dumps(body.get("payload",{})),allowed[event_type],"pending",0,dumps({}),None,None,utcnow(),None));db.commit()
-    except sqlite3.IntegrityError:raise ApiError("该业务事件已接收",409,"DUPLICATE_EVENT")
-    audit(db,user,"automation.receive","automation_event",event_id)
+    with AUTOMATION_ADMISSION_LOCK:
+        if db.execute("SELECT id FROM automation_events WHERE dedupe_key=?",(dedupe,)).fetchone():raise ApiError("该业务事件已接收",409,"DUPLICATE_EVENT")
+        try:
+            with transaction(db):
+                db.execute("INSERT INTO automation_events VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(event_id,event_type,dedupe,body.get("store_id") or user.get("store_id"),body.get("employee_id"),dumps(body.get("payload",{})),allowed[event_type],"pending",0,dumps({}),None,None,utcnow(),None))
+        except sqlite3.IntegrityError:raise ApiError("该业务事件已接收",409,"DUPLICATE_EVENT")
+        audit(db,user,"automation.receive","automation_event",event_id)
     threading.Thread(target=process_event,args=(db,event_id,user),daemon=True).start()
     return rowdict(db.execute("SELECT * FROM automation_events WHERE id=?",(event_id,)).fetchone())
 
