@@ -101,7 +101,7 @@ INTENT_SCHEMA={"type":"object","additionalProperties":False,"properties":{
     "context":{"type":"string","enum":["store_management","my_affairs"]},
     "summary":{"type":"string"},"confidence":{"type":"number"},
     "parameters":{"type":"object","additionalProperties":False,"properties":{
-        "start_date":{"type":["string","null"]},"end_date":{"type":["string","null"]},"store_code":{"type":["string","null"]},"role":{"type":["string","null"]},"headcount":{"type":["integer","null"]},"coverage_target":{"type":["number","null"]},"cost_increase_limit":{"type":["number","null"]},"leave_date":{"type":["string","null"]},"shift_id":{"type":["string","null"]},"preference_type":{"type":["string","null"]},"preference_value":{"type":["string","null"]}},"required":["start_date","end_date","store_code","role","headcount","coverage_target","cost_increase_limit","leave_date","shift_id","preference_type","preference_value"]}},
+        "start_date":{"type":["string","null"]},"end_date":{"type":["string","null"]},"store_code":{"type":["string","null"]},"role":{"type":["string","null"]},"headcount":{"type":["integer","null"]},"demand_items":{"type":"array","items":{"type":"object","additionalProperties":False,"properties":{"role":{"type":"string"},"headcount":{"type":"integer"}},"required":["role","headcount"]}},"coverage_target":{"type":["number","null"]},"cost_increase_limit":{"type":["number","null"]},"leave_date":{"type":["string","null"]},"shift_id":{"type":["string","null"]},"preference_type":{"type":["string","null"]},"preference_value":{"type":["string","null"]}},"required":["start_date","end_date","store_code","role","headcount","demand_items","coverage_target","cost_increase_limit","leave_date","shift_id","preference_type","preference_value"]}},
     "required":["intent","context","summary","confidence","parameters"]}
 
 
@@ -110,9 +110,10 @@ def classify_intent(client,user,text,requested_context="auto"):
     system=f"""你是 FlowStaff AI 的意图理解 Agent，只负责把用户原话转换成 WFM 结构化参数，不负责扩大需求。
 当前业务日期是 {today}。主管既可能管理门店，也可能办理本人事务。
 日期规则：理解今天、明天、本周五、下周等相对日期，start_date 和 end_date 必须输出 YYYY-MM-DD。
-人数与岗位规则：用户明确说“只、仅、需要、安排 N 名某岗位”时，role 必须是该岗位，headcount 必须是 N。这个人数是本次排班每个工作日该岗位的明确需求上限，禁止依据历史数据扩大，禁止增加用户未要求的其他岗位。
+人数与岗位规则：demand_items 必须完整保留用户提到的每一个岗位及对应人数，不能只取第一个。单岗位时同时填写 role/headcount；多岗位时 role/headcount 返回 null，以 demand_items 为准。明确人数禁止依据历史数据扩大，禁止增加用户未要求的岗位。
 缺失规则：没有输入的日期、人数、岗位或业务目标必须返回 null，禁止猜测或使用示例值。
-示例：“本周五只需要一名导购”应输出 schedule_create、当天起止日期、role=导购、headcount=1。"""
+示例1：“本周五只需要一名导购”应输出 demand_items=[{{"role":"导购","headcount":1}}]，并填写 role=导购、headcount=1。
+示例2：“本周五要一名导购、一名收银员”应输出 demand_items=[{{"role":"导购","headcount":1}},{{"role":"收银员","headcount":1}}]，role/headcount 返回 null。"""
     prompt=f"用户角色：{user['role']}；可访问门店：{user.get('store_id') or '组织范围'}；上下文选择：{requested_context}；用户输入：{text}"
     if client.enabled:
         result=client.structured(user["id"],"intent_classification",system,prompt,INTENT_SCHEMA)

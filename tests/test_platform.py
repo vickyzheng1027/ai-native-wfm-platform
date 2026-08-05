@@ -188,6 +188,25 @@ class FlowStaffTests(unittest.TestCase):
         self.assertTrue(all(plan["metrics"]["required"]==1 for plan in task["plans"]))
         self.assertTrue(all(len(plan["shifts"])==1 for plan in task["plans"]))
 
+    def test_multiple_role_requirements_are_all_preserved_end_to_end(self):
+        reference=date(2026,8,5);parsed=parse_schedule_parameters("本周五要一名导购，一名收银",reference)
+        self.assertEqual(parsed["demand_items"],[{"role":"收银员","headcount":1},{"role":"导购","headcount":1}])
+        self.assertIsNone(parsed["role"])
+        self.assertIsNone(parsed["headcount"])
+        with patch("backend.services.business_today",return_value=reference):
+            result=create_task(self.db,self.manager,"本周五要一名导购，一名收银，请生成排班方案","store_management")
+        for _ in range(100):
+            task=task_detail(self.db,self.manager,result["task_id"])
+            if task["status"] in ("completed","failed"):break
+            time.sleep(.02)
+        self.assertEqual(task["status"],"completed",task.get("error"))
+        self.assertEqual(task["parameters"]["demand_items"],[{"role":"收银员","headcount":1},{"role":"导购","headcount":1}])
+        for plan in task["plans"]:
+            self.assertEqual(plan["metrics"]["required"],2)
+            self.assertEqual(plan["metrics"]["assigned"],2)
+            self.assertEqual(len(plan["shifts"]),2)
+            self.assertEqual({shift["role"] for shift in plan["shifts"]},{"导购","收银员"})
+
     def test_schedule_request_without_any_date_does_not_use_hidden_default(self):
         parsed=parse_schedule_parameters("帮我生成排班",date(2026,8,5))
         self.assertIsNone(parsed["start_date"])

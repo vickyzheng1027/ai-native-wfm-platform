@@ -118,10 +118,10 @@ def resolve_schedule_period(text,today=None):
 
 
 def parse_schedule_parameters(text,today=None):
-    start,end=resolve_schedule_period(text,today);role,headcount=parse_explicit_staffing(text)
+    start,end=resolve_schedule_period(text,today);demand_items=parse_explicit_staffing_items(text);role=demand_items[0]["role"] if len(demand_items)==1 else None;headcount=demand_items[0]["headcount"] if len(demand_items)==1 else None
     coverage=float(re.search(r"覆盖率[^\d]*(\d+(?:\.\d+)?)",text).group(1)) if re.search(r"覆盖率[^\d]*(\d+(?:\.\d+)?)",text) else 95
     cost=float(re.search(r"成本[^\d]*(\d+(?:\.\d+)?)%",text).group(1)) if re.search(r"成本[^\d]*(\d+(?:\.\d+)?)%",text) else 8
-    return {"start_date":start,"end_date":end,"role":role,"headcount":headcount,"coverage_target":coverage,"cost_increase_limit":cost,"minimize_nights":"夜班" in text,"raw_constraints":[]}
+    return {"start_date":start,"end_date":end,"role":role,"headcount":headcount,"demand_items":demand_items,"coverage_target":coverage,"cost_increase_limit":cost,"minimize_nights":"夜班" in text,"raw_constraints":[]}
 
 
 def normalize_model_date(value,today=None):
@@ -141,24 +141,41 @@ def parse_headcount(value):
     return None
 
 
+def parse_explicit_staffing_items(text):
+    aliases=(("资深导购",("资深导购",)),("收银员",("收银员","收银")),("理货员",("理货员","理货")),("导购",("导购",)),("店长",("店长",)));number_pattern=r"(\d+|[零一二两三四五六七八九十]+)";result=[]
+    for role,names in aliases:
+        match=None
+        for name in names:
+            for pattern in (rf"{number_pattern}\s*(?:名|个|位)?\s*{name}",rf"{name}[^，。；,;]{{0,10}}?(?:需要|安排|要)?\s*{number_pattern}\s*(?:名|个|位)?"):
+                match=re.search(pattern,text)
+                if match:break
+            if match:break
+        if match:
+            headcount=parse_headcount(match.group(1))
+            if headcount is not None:result.append({"role":role,"headcount":headcount})
+    return result
+
+
 def parse_explicit_staffing(text):
-    roles=("资深导购","收银员","理货员","导购","店长");number_pattern=r"(\d+|[零一二两三四五六七八九十]+)"
-    for role in roles:
-        for pattern in (rf"{number_pattern}\s*(?:名|个|位)?\s*{role}",rf"{role}[^，。；,;]{{0,10}}?(?:需要|安排|要)?\s*{number_pattern}\s*(?:名|个|位)?"):
-            match=re.search(pattern,text)
-            if match:
-                headcount=parse_headcount(match.group(1))
-                if headcount is not None:return role,headcount
-    return next((role for role in roles if role in text),None),None
+    items=parse_explicit_staffing_items(text)
+    return (items[0]["role"],items[0]["headcount"]) if len(items)==1 else (None,None)
+
+
+def requested_demand_items(params):
+    items=[]
+    for item in params.get("demand_items") or []:
+        if isinstance(item,dict) and item.get("role") and isinstance(item.get("headcount"),int) and item["headcount"]>0:items.append({"role":item["role"],"headcount":item["headcount"]})
+    if not items and params.get("role") and isinstance(params.get("headcount"),int) and params["headcount"]>0:items=[{"role":params["role"],"headcount":params["headcount"]}]
+    return items
 
 
 def apply_explicit_demand_constraints(demands,params):
-    role=params.get("role");headcount=params.get("headcount");filtered=[dict(item) for item in demands if not role or item["role"]==role]
-    if role and headcount is not None:
-        per_date={}
-        for item in filtered:per_date.setdefault(item["demand_date"],item)
+    requested=requested_demand_items(params);requirements={item["role"]:item["headcount"] for item in requested};filtered=[dict(item) for item in demands if not requirements or item["role"] in requirements]
+    if requirements:
+        per_date_role={}
+        for item in filtered:per_date_role.setdefault((item["demand_date"],item["role"]),item)
         filtered=[]
-        for item in per_date.values():item["required_count"]=int(headcount);filtered.append(item)
+        for (_,role),item in per_date_role.items():item["required_count"]=requirements[role];filtered.append(item)
     return sorted(filtered,key=lambda item:(item["demand_date"],item["start_time"]))
 
 
@@ -176,17 +193,27 @@ def ensure_demand_forecast(db,user,params):
     if not start or not end:raise ApiError("排班任务缺少开始和结束日期",422,"MISSING_SCHEDULE_DATES")
     start_date=datetime.fromisoformat(start).date();end_date=datetime.fromisoformat(end).date()
     if end_date<start_date or (end_date-start_date).days>31:raise ApiError("排班周期必须在 1 至 31 天内",422,"INVALID_SCHEDULE_RANGE")
-    existing=rows(db,"SELECT * FROM business_demands WHERE store_id=? AND demand_date BETWEEN ? AND ? ORDER BY demand_date,start_time",(store_id,start,end));constrained_existing=apply_explicit_demand_constraints(existing,params)
-    if constrained_existing:return constrained_existing,"existing_with_user_constraints" if params.get("role") else "existing"
+    existing=rows(db,"SELECT * FROM business_demands WHERE store_id=? AND demand_date BETWEEN ? AND ? ORDER BY demand_date,start_time",(store_id,start,end))
     baseline=rows(db,"SELECT * FROM business_demands WHERE store_id=? ORDER BY demand_date,start_time",(store_id,))
     if not baseline:raise ApiError("当前门店没有可用于预测的历史岗位需求，请先录入业务需求",422,"NO_DEMAND_BASELINE")
-    requested_role=params.get("role");requested_headcount=params.get("headcount")
+    requested=requested_demand_items(params)
+    if requested:
+        completed=[];generated=[];day=start_date
+        with transaction(db):
+            while day<=end_date:
+                for requirement in requested:
+                    matching=[item for item in existing if item["demand_date"]==day.isoformat() and item["role"]==requirement["role"]]
+                    if matching:
+                        demand=dict(matching[0]);demand["required_count"]=requirement["headcount"];completed.append(demand);continue
+                    samples=[item for item in baseline if item["role"]==requirement["role"]] or baseline;sample=samples[0]
+                    demand={"id":uid("demand"),"store_id":store_id,"demand_date":day.isoformat(),"start_time":sample["start_time"],"end_time":sample["end_time"],"role":requirement["role"],"required_count":requirement["headcount"],"confidence":round(max(.65,sample["confidence"]-.03),2),"factors_json":dumps(["用户明确岗位人数","历史时段基线"]),"source":"explicit_user_demand","created_at":utcnow()}
+                    db.execute("INSERT INTO business_demands VALUES(?,?,?,?,?,?,?,?,?,?,?)",tuple(demand.values()));generated.append(demand);completed.append(demand)
+                day+=timedelta(days=1)
+        return completed,"explicit_user_demand" if generated else "existing_with_user_constraints"
+    if existing:return existing,"existing"
     patterns={}
     for demand in baseline:
-        if requested_role and demand["role"]!=requested_role:continue
         patterns.setdefault(demand["role"],[]).append(demand)
-    if not patterns and requested_role:
-        patterns[requested_role]=baseline
     generated=[];day=start_date
     with transaction(db):
         while day<=end_date:
@@ -194,7 +221,7 @@ def ensure_demand_forecast(db,user,params):
             for role,samples in patterns.items():
                 sample=samples[0];start_time=sample["start_time"];end_time=sample["end_time"]
                 average=sum(item["required_count"] for item in samples)/len(samples)
-                count=int(requested_headcount) if requested_headcount and (not requested_role or role==requested_role) else max(1,round(average*weekend_factor))
+                count=max(1,round(average*weekend_factor))
                 confidence=round(max(.65,min(.9,sum(item["confidence"] for item in samples)/len(samples)-.04)),2)
                 demand={"id":uid("demand"),"store_id":store_id,"demand_date":day.isoformat(),"start_time":start_time,"end_time":end_time,"role":role,"required_count":count,"confidence":confidence,"factors_json":dumps(["历史岗位需求基线","周末系数" if day.weekday()>=5 else "工作日系数","用户输入约束"]),"source":"statistical_forecast_v1","created_at":utcnow()}
                 db.execute("INSERT INTO business_demands VALUES(?,?,?,?,?,?,?,?,?,?,?)",tuple(demand.values()));generated.append(demand)
@@ -210,8 +237,8 @@ def create_task(db,user,text,context="auto",trigger_event_id=None):
     if intent["intent"]=="schedule_create":
         local=parse_schedule_parameters(text);model_start=normalize_model_date(params.get("start_date"));model_end=normalize_model_date(params.get("end_date"))
         params={**local,**{key:value for key,value in params.items() if key not in ("start_date","end_date")},"start_date":model_start or local["start_date"],"end_date":model_end or model_start or local["end_date"]}
-        for key in ("role","headcount"):
-            if local.get(key) is not None:params[key]=local[key]
+        if local.get("demand_items"):
+            params["demand_items"]=local["demand_items"];params["role"]=local["role"];params["headcount"]=local["headcount"]
     db.execute("INSERT INTO tasks VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(task_id,user["id"],intent["context"],text,intent["intent"],"queued",0,dumps(params),dumps([]),trigger_event_id,1,None,utcnow(),None));db.commit()
     audit(db,user,"task.create","task",task_id,details={"intent":intent["intent"],"mode":intent["mode"]})
     if intent["intent"]=="schedule_create":threading.Thread(target=run_schedule_task,args=(db,task_id,user),daemon=True).start()
