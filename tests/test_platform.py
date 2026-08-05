@@ -62,6 +62,18 @@ class FlowStaffTests(unittest.TestCase):
         with self.assertRaisesRegex(ApiError,"授权门店"):
             save_employee(self.db,self.manager,{"code":"X","name":"越权","role":"导购","department":"销售","store_id":"store-b"})
 
+    def test_employee_create_persists_profile_and_certified_skills(self):
+        created=save_employee(self.db,self.manager,{"code":"SH099","name":"新增员工","role":"导购","department":"销售部","store_id":"store-a","hourly_rate":38,"weekly_hour_limit":36,"preferences":{"ai_summary":"优先早班"},"skills":[{"skill":"销售","proficiency":3,"certified":True}]})
+        self.assertEqual(created["code"],"SH099")
+        self.assertEqual(created["preferences"]["ai_summary"],"优先早班")
+        self.assertEqual(created["skills"][0]["skill"],"销售")
+        self.assertEqual(created["skills"][0]["certified"],1)
+
+    def test_employee_page_binds_add_button_to_real_create_api(self):
+        script=(Path(__file__).parents[1]/"public"/"app.js").read_text(encoding="utf-8")
+        self.assertIn("add.onclick=openEmployeeForm",script)
+        self.assertIn("'/api/organization/employees',{method:'POST'",script)
+
     def test_attendance_summary_excludes_leave_and_overtime_from_exceptions(self):
         result=attendance_overview(self.db,self.manager,"2026-08-01","2026-08-07")
         expected=sum(x["event_type"] in ("late","absence") for x in result["records"])
