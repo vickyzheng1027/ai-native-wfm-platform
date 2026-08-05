@@ -107,7 +107,12 @@ INTENT_SCHEMA={"type":"object","additionalProperties":False,"properties":{
 
 def classify_intent(client,user,text,requested_context="auto"):
     today=datetime.now(ZoneInfo(os.getenv("WFM_TIMEZONE","Asia/Shanghai"))).date().isoformat()
-    system=f"""你是 FlowStaff AI 的意图理解 Agent。只识别 WFM 业务意图和结构化参数。主管既可能管理门店，也可能办理本人事务。当前业务日期是 {today}。需要理解今天、明天、本周五、下周等相对日期并输出 YYYY-MM-DD。不得虚构用户未输入的日期、人数或业务目标。"""
+    system=f"""你是 FlowStaff AI 的意图理解 Agent，只负责把用户原话转换成 WFM 结构化参数，不负责扩大需求。
+当前业务日期是 {today}。主管既可能管理门店，也可能办理本人事务。
+日期规则：理解今天、明天、本周五、下周等相对日期，start_date 和 end_date 必须输出 YYYY-MM-DD。
+人数与岗位规则：用户明确说“只、仅、需要、安排 N 名某岗位”时，role 必须是该岗位，headcount 必须是 N。这个人数是本次排班每个工作日该岗位的明确需求上限，禁止依据历史数据扩大，禁止增加用户未要求的其他岗位。
+缺失规则：没有输入的日期、人数、岗位或业务目标必须返回 null，禁止猜测或使用示例值。
+示例：“本周五只需要一名导购”应输出 schedule_create、当天起止日期、role=导购、headcount=1。"""
     prompt=f"用户角色：{user['role']}；可访问门店：{user.get('store_id') or '组织范围'}；上下文选择：{requested_context}；用户输入：{text}"
     if client.enabled:
         result=client.structured(user["id"],"intent_classification",system,prompt,INTENT_SCHEMA)

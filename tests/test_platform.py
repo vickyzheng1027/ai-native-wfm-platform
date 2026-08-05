@@ -159,6 +159,35 @@ class FlowStaffTests(unittest.TestCase):
         self.assertTrue(all(plan["shifts"] for plan in task["plans"]))
         self.assertTrue(all(shift["start_at"].startswith("2026-08-07") for plan in task["plans"] for shift in plan["shifts"]))
 
+    def test_explicit_one_salesperson_is_a_hard_demand_constraint(self):
+        reference=date(2026,8,5);parsed=parse_schedule_parameters("本周五只需要一名导购",reference)
+        self.assertEqual(parsed["role"],"导购")
+        self.assertEqual(parsed["headcount"],1)
+        with patch("backend.services.business_today",return_value=reference):
+            result=create_task(self.db,self.manager,"本周五只需要一名导购，请生成排班方案","store_management")
+        for _ in range(100):
+            task=task_detail(self.db,self.manager,result["task_id"])
+            if task["status"] in ("completed","failed"):break
+            time.sleep(.02)
+        self.assertEqual(task["status"],"completed",task.get("error"))
+        self.assertEqual(task["parameters"]["role"],"导购")
+        self.assertEqual(task["parameters"]["headcount"],1)
+        for plan in task["plans"]:
+            self.assertEqual(plan["metrics"]["required"],1)
+            self.assertEqual(plan["metrics"]["assigned"],1)
+            self.assertEqual(len(plan["shifts"]),1)
+            self.assertEqual(plan["shifts"][0]["role"],"导购")
+
+    def test_explicit_headcount_overrides_larger_existing_demand(self):
+        result=create_task(self.db,self.manager,"8月8日只需要1名导购排班","store_management")
+        for _ in range(100):
+            task=task_detail(self.db,self.manager,result["task_id"])
+            if task["status"] in ("completed","failed"):break
+            time.sleep(.02)
+        self.assertEqual(task["status"],"completed",task.get("error"))
+        self.assertTrue(all(plan["metrics"]["required"]==1 for plan in task["plans"]))
+        self.assertTrue(all(len(plan["shifts"])==1 for plan in task["plans"]))
+
     def test_schedule_request_without_any_date_does_not_use_hidden_default(self):
         parsed=parse_schedule_parameters("帮我生成排班",date(2026,8,5))
         self.assertIsNone(parsed["start_date"])

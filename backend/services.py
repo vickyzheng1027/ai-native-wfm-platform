@@ -118,10 +118,10 @@ def resolve_schedule_period(text,today=None):
 
 
 def parse_schedule_parameters(text,today=None):
-    start,end=resolve_schedule_period(text,today)
+    start,end=resolve_schedule_period(text,today);role,headcount=parse_explicit_staffing(text)
     coverage=float(re.search(r"覆盖率[^\d]*(\d+(?:\.\d+)?)",text).group(1)) if re.search(r"覆盖率[^\d]*(\d+(?:\.\d+)?)",text) else 95
     cost=float(re.search(r"成本[^\d]*(\d+(?:\.\d+)?)%",text).group(1)) if re.search(r"成本[^\d]*(\d+(?:\.\d+)?)%",text) else 8
-    return {"start_date":start,"end_date":end,"coverage_target":coverage,"cost_increase_limit":cost,"minimize_nights":"夜班" in text,"raw_constraints":[]}
+    return {"start_date":start,"end_date":end,"role":role,"headcount":headcount,"coverage_target":coverage,"cost_increase_limit":cost,"minimize_nights":"夜班" in text,"raw_constraints":[]}
 
 
 def normalize_model_date(value,today=None):
@@ -129,6 +129,37 @@ def normalize_model_date(value,today=None):
     try:return datetime.fromisoformat(str(value)).date().isoformat()
     except ValueError:
         start,_=resolve_schedule_period(str(value),today);return start
+
+
+def parse_headcount(value):
+    raw=str(value);digits=re.search(r"\d+",raw)
+    if digits:return int(digits.group())
+    numbers={"零":0,"一":1,"二":2,"两":2,"三":3,"四":4,"五":5,"六":6,"七":7,"八":8,"九":9}
+    if raw in numbers:return numbers[raw]
+    if "十" in raw:
+        left,right=raw.split("十",1);return numbers.get(left,1)*10+numbers.get(right,0)
+    return None
+
+
+def parse_explicit_staffing(text):
+    roles=("资深导购","收银员","理货员","导购","店长");number_pattern=r"(\d+|[零一二两三四五六七八九十]+)"
+    for role in roles:
+        for pattern in (rf"{number_pattern}\s*(?:名|个|位)?\s*{role}",rf"{role}[^，。；,;]{{0,10}}?(?:需要|安排|要)?\s*{number_pattern}\s*(?:名|个|位)?"):
+            match=re.search(pattern,text)
+            if match:
+                headcount=parse_headcount(match.group(1))
+                if headcount is not None:return role,headcount
+    return next((role for role in roles if role in text),None),None
+
+
+def apply_explicit_demand_constraints(demands,params):
+    role=params.get("role");headcount=params.get("headcount");filtered=[dict(item) for item in demands if not role or item["role"]==role]
+    if role and headcount is not None:
+        per_date={}
+        for item in filtered:per_date.setdefault(item["demand_date"],item)
+        filtered=[]
+        for item in per_date.values():item["required_count"]=int(headcount);filtered.append(item)
+    return sorted(filtered,key=lambda item:(item["demand_date"],item["start_time"]))
 
 
 def task_store_id(db,user,params):
@@ -145,8 +176,8 @@ def ensure_demand_forecast(db,user,params):
     if not start or not end:raise ApiError("排班任务缺少开始和结束日期",422,"MISSING_SCHEDULE_DATES")
     start_date=datetime.fromisoformat(start).date();end_date=datetime.fromisoformat(end).date()
     if end_date<start_date or (end_date-start_date).days>31:raise ApiError("排班周期必须在 1 至 31 天内",422,"INVALID_SCHEDULE_RANGE")
-    existing=rows(db,"SELECT * FROM business_demands WHERE store_id=? AND demand_date BETWEEN ? AND ? ORDER BY demand_date,start_time",(store_id,start,end))
-    if existing:return existing,"existing"
+    existing=rows(db,"SELECT * FROM business_demands WHERE store_id=? AND demand_date BETWEEN ? AND ? ORDER BY demand_date,start_time",(store_id,start,end));constrained_existing=apply_explicit_demand_constraints(existing,params)
+    if constrained_existing:return constrained_existing,"existing_with_user_constraints" if params.get("role") else "existing"
     baseline=rows(db,"SELECT * FROM business_demands WHERE store_id=? ORDER BY demand_date,start_time",(store_id,))
     if not baseline:raise ApiError("当前门店没有可用于预测的历史岗位需求，请先录入业务需求",422,"NO_DEMAND_BASELINE")
     requested_role=params.get("role");requested_headcount=params.get("headcount")
@@ -179,6 +210,8 @@ def create_task(db,user,text,context="auto",trigger_event_id=None):
     if intent["intent"]=="schedule_create":
         local=parse_schedule_parameters(text);model_start=normalize_model_date(params.get("start_date"));model_end=normalize_model_date(params.get("end_date"))
         params={**local,**{key:value for key,value in params.items() if key not in ("start_date","end_date")},"start_date":model_start or local["start_date"],"end_date":model_end or model_start or local["end_date"]}
+        for key in ("role","headcount"):
+            if local.get(key) is not None:params[key]=local[key]
     db.execute("INSERT INTO tasks VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(task_id,user["id"],intent["context"],text,intent["intent"],"queued",0,dumps(params),dumps([]),trigger_event_id,1,None,utcnow(),None));db.commit()
     audit(db,user,"task.create","task",task_id,details={"intent":intent["intent"],"mode":intent["mode"]})
     if intent["intent"]=="schedule_create":threading.Thread(target=run_schedule_task,args=(db,task_id,user),daemon=True).start()
@@ -202,7 +235,7 @@ def employee_matches_role(employee,skills,role):
 
 
 def generate_plan(db,task,strategy):
-    params=loads(task["parameters_json"],{});store_id=params.get("resolved_store_id","store-a");demands=rows(db,"SELECT * FROM business_demands WHERE store_id=? AND demand_date BETWEEN ? AND ? ORDER BY demand_date,start_time",(store_id,params.get("start_date"),params.get("end_date")))
+    params=loads(task["parameters_json"],{});store_id=params.get("resolved_store_id","store-a");demands=apply_explicit_demand_constraints(rows(db,"SELECT * FROM business_demands WHERE store_id=? AND demand_date BETWEEN ? AND ? ORDER BY demand_date,start_time",(store_id,params.get("start_date"),params.get("end_date"))),params)
     if not demands:raise ApiError("没有可执行的岗位需求，禁止生成空排班方案",422,"EMPTY_SCHEDULE_DEMAND")
     employees=[employee for employee in employee_list(db,{"role":"admin","store_id":None}) if employee["store_id"]==store_id and employee["status"]=="active"]
     unavailable={(item["employee_id"],item["event_date"]) for item in rows(db,"SELECT employee_id,event_date FROM attendance WHERE event_date BETWEEN ? AND ? AND event_type IN ('leave','absence')",(params.get("start_date"),params.get("end_date")))}
