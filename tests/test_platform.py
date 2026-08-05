@@ -59,6 +59,12 @@ class FlowStaffTests(unittest.TestCase):
         self.assertIn(".badge{font-size:12px",css)
         self.assertIn(".form-field label{font-size:13px}",css)
 
+    def test_agent_panels_have_persistent_accessible_collapse_controls(self):
+        script=(Path(__file__).parents[1]/"public"/"app.js").read_text(encoding="utf-8")
+        self.assertIn('data-toggle-panel="${panel}"',script)
+        self.assertIn('aria-expanded="${!collapsed}"',script)
+        self.assertIn("toggleCollapsiblePanel(toggle,state.collapsedPanels)",script)
+
     def test_passwords_are_pbkdf2_hashes(self):
         encoded=self.manager["password_hash"]
         self.assertTrue(encoded.startswith("pbkdf2_sha256$"))

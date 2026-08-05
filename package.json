@@ -4,7 +4,7 @@
   "private": true,
   "description": "FlowStaff AI Render compatibility launcher",
   "scripts": {
-    "test": "python3 -m pip install -r backend/requirements.txt && python3 -m unittest discover -s tests -v",
+    "test": "python3 -m pip install -r backend/requirements.txt && python3 -m unittest discover -s tests -v && node --test tests/panel-toggle.test.js",
     "start": "python3 -u backend/app.py"
   },
   "engines": {
