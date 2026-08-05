@@ -1,80 +1,50 @@
-# AI Native WFM Platform
+# FlowStaff AI
 
-面向管理层比赛演示的 AI Native 跨店补位决策系统。系统以一条端到端业务链贯穿规则、排班、人员、工时、合规、成本账户与数据反哺，所有状态都真实写入 SQLite。
+AI Native 劳动力管理系统，依据《FlowStaff_AI_WFM_完整需求文档_v3.0》重写。系统采用 Python 3.12、SQLite、OR-Tools CP-SAT、OpenAI 兼容 Responses/Embedding API 和无框架 SPA。
 
-## 已实现能力
+## 真实能力
 
-- 自然语言规则解析、元数据防幻觉、人工确认与规则版本激活
-- 规则库、历史版本和基于运行结果的规则优化建议
-- 门店缺口创建、技能/资格/工时/连续工作天数确定性过滤
-- 候选评分、风险与基于真实数字的推荐理由
-- 确认前按最新规则二次校验，规则变化后自动废弃并重新推荐
-- 调剂成本实时计算并归属劳动力账户
-- 公司 Gaia OpenAI Responses API，45 秒超时、重试一次、明确兜底
-- 一键重置可重复演示数据
-- 员工档案、技能、跨店资格、合同工时和排班偏好真实维护
-- 员工请假申请、主管审批与排班不可用时段联动
-- 中国大陆年度工作日、周末、法定节假日和调休工作日周历
-- 结构化周需求与自然语言业务需求双输入
-- 综合最优、成本优先、员工体验优先三套可比较排班方案
-- 方案确认后生成正式周班表，支持手动新增和微调
-- 硬规则禁止保存，软规则填写原因后保存并写入审计
-- 班表确认后自动下发通知，考勤异常和客流突增进入事件队列
-- 动态自愈建议经主管采纳后，真实替换班次或生成用工缺口并留痕
-- 预测与实际偏差复盘生成可审核的策略迭代建议
-
-## 主要接口
-
-- `POST /api/rules/parse`：解析自然语言规则并生成草稿
-- `POST /api/rule-drafts/:id/activate`：人工确认后激活规则版本
-- `POST /api/shortages`：创建真实用工缺口
-- `POST /api/shortages/:id/recommend`：运行确定性过滤与推荐
-- `POST /api/suggestions/:id/confirm`：最新规则校验与成本入账
-- `POST /api/rule-optimizations/run`：基于运行数据生成规则优化建议
-- `POST /api/demo/reset`：重置比赛数据
-- `GET/POST/PUT /api/employees`：员工查看与维护
-- `GET/POST /api/leaves`：请假申请与查询
-- `POST /api/leaves/:id/approve`：主管审批请假
-- `GET /api/calendar`：查询业务日历
-- `GET/POST /api/demands`：结构化业务需求维护
-- `POST /api/demands/parse`：真实 Agent 理解自然语言业务需求
-- `POST /api/schedule-plans/generate`：生成三套排班方案
-- `POST /api/schedule-plans/:id/confirm`：确认方案并生成正式班次
-- `GET/POST/PUT /api/shifts`：班表查询和合规微调
-- `GET /api/closed-loop`：查询通知、考勤、事件、预测与反馈闭环数据
-- `POST /api/attendance`：采集考勤并自动识别异常
-- `POST /api/operational-events`：创建运营事件并生成自愈建议
-- `POST /api/operational-events/:id/accept`：主管采纳并执行自愈建议
-- `POST /api/feedback/review`：复盘预测偏差并生成策略建议
+- PBKDF2-SHA256 账号密码、Bearer 会话、角色与数据范围双重权限校验
+- 统一自然语言 Agent，自动识别门店管理与本人事务
+- 真实模型意图识别、规则解析和 RAG；未配置模型时明确返回降级模式
+- 六阶段异步排班任务，两套独立方案，推荐、生效、发布严格分离
+- OR-Tools CP-SAT 硬约束求解，依赖不可用时明确标识启发式降级
+- 员工班表查询、请假/换班/调班申请和自然语言偏好
+- 员工、技能认证、考勤矩阵、假期额度、异常处置、规则治理
+- 自动事件监听、幂等接入和需主管审批的重排任务
+- AI 调用、登录、任务、规则、发布、异常、事件与备份审计
+- SQLite 在线备份与校验和
 
 ## 本地运行
 
-要求 Node.js 22.5 或更高版本。
-
 ```bash
-npm test
-npm start
+python3.12 -m pip install -r backend/requirements.txt
+python3.12 -m unittest discover -s tests -v
+python3.12 backend/app.py --host 127.0.0.1 --port 4173
 ```
 
-打开 `http://localhost:4180`。
+打开 `http://127.0.0.1:4173`。
 
-启用真实 AI Agent 前配置：
+测试账号：
+
+- 主管：`manager / Manager123!`
+- 员工：`employee / Employee123!`
+- 管理员：`admin / FlowStaff123!`
+- HR：`hr / FlowHR123!`
+- 审计员：`auditor / Audit12345!`
+
+## 真实 AI 配置
 
 ```bash
 export OPENAI_BASE_URL="https://coding.gaiaworks.net/openai/v1"
-export CODEX_API_KEY="你的公司内部 API Key"
-export OPENAI_MODEL="gpt-5.5"
-export OPENAI_TIMEOUT_MS="45000"
+export OPENAI_API_KEY="公司内部 API Key"
+export WFM_LLM_MODEL="gpt-5.5"
+export WFM_EMBEDDING_MODEL="text-embedding-3-small"
+export WFM_LLM_TIMEOUT_SECONDS="45"
 ```
 
-公司内部网关使用 `OPENAI_BASE_URL`、`CODEX_API_KEY` 和 `OPENAI_MODEL`。系统会调用 `${OPENAI_BASE_URL}/responses`，密钥只应配置在运行环境中，不得写入代码或提交到 Git。使用 OpenAI 官方地址时也兼容 `OPENAI_API_KEY`，且要求密钥以 `sk-` 开头。
+密钥只从环境变量读取。系统不会把密钥写入前端、数据库或日志。可通过 `GET /api/ai/health` 查看当前真实运行模式。
 
-没有有效 API Key 或模型连续两次失败时，规则理解切换到明确标识的确定性解析。候选过滤、合规、工时、成本和规则优化始终由确定性引擎负责，不依赖模型生成数字。
+## 数据持久化
 
-数据库默认位于 `data/wfm.db`，可通过 `DATABASE_PATH` 指定其他路径。
-
-## 数据说明
-
-系统内置 A、B、C 三家门店和覆盖关键边界条件的员工数据。页面不需要登录，所有操作、校验、版本和成本均由后端执行并写入 SQLite。
-
-Render 免费实例的文件系统会在重建或休眠恢复时丢失。正式持久化部署需要挂载 Persistent Disk 并把 `DATABASE_PATH` 配置为磁盘目录，或切换到托管 PostgreSQL。
+默认数据库为 `data/flowstaff.db`，可通过 `DATABASE_PATH` 修改。Render 免费实例的 `/tmp` 不保证持久化；正式环境需挂载 Persistent Disk，或迁移 PostgreSQL。
