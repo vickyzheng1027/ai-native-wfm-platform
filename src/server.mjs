@@ -6,6 +6,7 @@ import { createDatabase,resetDatabase,parseJson } from './db.mjs';
 import * as wfm from './ai-native-engine.mjs';
 import { parseRulesWithAgent,parseDemandWithAgent,normalizeDemandAgentItem,isAiConfigured,MODEL } from './openai-agent.mjs';
 import * as schedule from './scheduling.mjs';
+import * as loop from './closed-loop.mjs';
 
 const root=dirname(dirname(fileURLToPath(import.meta.url))), db=createDatabase(process.env.DATABASE_PATH||join(root,'data','wfm.db')), port=Number(process.env.PORT||4180);
 const json=(res,status,data)=>{const body=JSON.stringify(data);res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Content-Length':Buffer.byteLength(body),'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'});res.end(body);};
@@ -34,6 +35,12 @@ async function api(req,res,path,url){let p,b;
  if(req.method==='POST'&&path==='/api/shifts/validate')return json(res,200,{ok:true,data:schedule.validateShift(db,await body(req))});
  if(req.method==='POST'&&path==='/api/shifts')return json(res,201,{ok:true,data:schedule.saveShift(db,await body(req))});
  p=match(path,'/api/shifts/:id');if(req.method==='PUT'&&p)return json(res,200,{ok:true,data:schedule.saveShift(db,await body(req),p.id)});
+ if(req.method==='GET'&&path==='/api/closed-loop')return json(res,200,{ok:true,data:loop.closedLoopOverview(db)});
+ if(req.method==='POST'&&path==='/api/attendance'){b=await body(req);return json(res,201,{ok:true,data:loop.recordAttendance(db,b)});}
+ if(req.method==='POST'&&path==='/api/operational-events'){b=await body(req);return json(res,201,{ok:true,data:loop.createOperationalEvent(db,b)});}
+ p=match(path,'/api/operational-events/:id/remediate');if(req.method==='POST'&&p)return json(res,200,{ok:true,data:loop.remediateEvent(db,p.id)});
+ p=match(path,'/api/operational-events/:id/accept');if(req.method==='POST'&&p)return json(res,200,{ok:true,data:loop.acceptRemediation(db,p.id,await body(req))});
+ if(req.method==='POST'&&path==='/api/feedback/review')return json(res,201,{ok:true,data:loop.runFeedbackReview(db)});
  if(req.method==='POST'&&path==='/api/demo/reset')return json(res,200,{ok:true,data:resetDatabase(db)});
  if(req.method==='GET'&&path==='/api/rules')return json(res,200,{ok:true,data:wfm.activeRules(db)});
  if(req.method==='POST'&&path==='/api/rules/parse'){b=await body(req);let parsed,source='gaia_agent';try{const ai=await parseRulesWithAgent(String(b.text||''),wfm.metadata(db));parsed=wfm.deterministicParse(String(b.text||''),db);parsed.summary=ai.summary;for(const item of parsed.items){const a=ai.items?.find(x=>x.code===item.code);if(a&&a.value!==undefined&&Number(a.confidence)>=.7){item.value=a.value;item.confidence=a.confidence;}}parsed.unresolved=[...new Set([...parsed.unresolved,...(ai.unresolved||[])])];}catch(e){source='deterministic_fallback';parsed=wfm.deterministicParse(String(b.text||''),db);parsed.fallbackReason=e.message;}return json(res,201,{ok:true,data:wfm.saveDraft(db,String(b.text||''),parsed,source)});}

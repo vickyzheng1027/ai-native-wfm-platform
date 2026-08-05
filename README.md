@@ -19,6 +19,9 @@
 - 综合最优、成本优先、员工体验优先三套可比较排班方案
 - 方案确认后生成正式周班表，支持手动新增和微调
 - 硬规则禁止保存，软规则填写原因后保存并写入审计
+- 班表确认后自动下发通知，考勤异常和客流突增进入事件队列
+- 动态自愈建议经主管采纳后，真实替换班次或生成用工缺口并留痕
+- 预测与实际偏差复盘生成可审核的策略迭代建议
 
 ## 主要接口
 
@@ -38,6 +41,11 @@
 - `POST /api/schedule-plans/generate`：生成三套排班方案
 - `POST /api/schedule-plans/:id/confirm`：确认方案并生成正式班次
 - `GET/POST/PUT /api/shifts`：班表查询和合规微调
+- `GET /api/closed-loop`：查询通知、考勤、事件、预测与反馈闭环数据
+- `POST /api/attendance`：采集考勤并自动识别异常
+- `POST /api/operational-events`：创建运营事件并生成自愈建议
+- `POST /api/operational-events/:id/accept`：主管采纳并执行自愈建议
+- `POST /api/feedback/review`：复盘预测偏差并生成策略建议
 
 ## 本地运行
 

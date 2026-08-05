@@ -17,11 +17,11 @@ export function createDatabase(path = ':memory:') {
 }
 
 function migrate(db) {
-  const schemaVersion=3;
+  const schemaVersion=4;
   const current=db.prepare('PRAGMA user_version').get().user_version;
   if(current!==schemaVersion){
     db.exec('PRAGMA foreign_keys=OFF');
-    for(const table of ['shift_adjustments','rule_validation_logs','shifts','schedule_plan_shifts','schedule_plans','business_demands','calendar_days','leave_requests','employee_availability','agent_steps','agent_runs','cost_allocations','compliance_checks','transfer_orders','transfer_suggestions','shortage_events','rule_optimization_suggestions','rule_draft_items','rule_drafts','rule_versions','rules','employees','stores','sessions','tenants','users','labor_accounts','events','demand_history','compliance_rules','requests','attendance_punches','ai_plans','audit_logs']) db.exec(`DROP TABLE IF EXISTS ${table}`);
+    for(const table of ['feedback_records','operational_events','attendance_records','schedule_notifications','demand_forecasts','shift_adjustments','rule_validation_logs','shifts','schedule_plan_shifts','schedule_plans','business_demands','calendar_days','leave_requests','employee_availability','agent_steps','agent_runs','cost_allocations','compliance_checks','transfer_orders','transfer_suggestions','shortage_events','rule_optimization_suggestions','rule_draft_items','rule_drafts','rule_versions','rules','employees','stores','sessions','tenants','users','labor_accounts','events','demand_history','compliance_rules','requests','attendance_punches','ai_plans','audit_logs']) db.exec(`DROP TABLE IF EXISTS ${table}`);
     db.exec(`PRAGMA user_version=${schemaVersion}; PRAGMA foreign_keys=ON;`);
   }
   db.exec(`
@@ -48,13 +48,18 @@ function migrate(db) {
     CREATE TABLE IF NOT EXISTS rule_optimization_suggestions(id TEXT PRIMARY KEY, rule_id TEXT, metric_json TEXT, current_value_json TEXT, proposed_value_json TEXT, reason TEXT, status TEXT, created_at TEXT, decided_at TEXT);
     CREATE TABLE IF NOT EXISTS agent_runs(id TEXT PRIMARY KEY, agent_type TEXT, input_text TEXT, status TEXT, model_source TEXT, summary TEXT, created_at TEXT, completed_at TEXT);
     CREATE TABLE IF NOT EXISTS agent_steps(id TEXT PRIMARY KEY, run_id TEXT, step_name TEXT, business_summary TEXT, result_json TEXT, created_at TEXT);
+    CREATE TABLE IF NOT EXISTS demand_forecasts(id TEXT PRIMARY KEY, store_id TEXT, forecast_date TEXT, signal_type TEXT, historical_value REAL, predicted_value REAL, required_headcount INTEGER, model_version TEXT, actual_value REAL, deviation_rate REAL, created_at TEXT);
+    CREATE TABLE IF NOT EXISTS schedule_notifications(id TEXT PRIMARY KEY, shift_id TEXT, employee_id TEXT, channel TEXT, status TEXT, message TEXT, sent_at TEXT, read_at TEXT);
+    CREATE TABLE IF NOT EXISTS attendance_records(id TEXT PRIMARY KEY, employee_id TEXT, shift_id TEXT, punch_type TEXT, punched_at TEXT, source TEXT, verified INTEGER, exception_code TEXT, created_at TEXT);
+    CREATE TABLE IF NOT EXISTS operational_events(id TEXT PRIMARY KEY, event_type TEXT, store_id TEXT, employee_id TEXT, shift_id TEXT, occurred_at TEXT, status TEXT, payload_json TEXT, remediation_json TEXT, created_at TEXT, resolved_at TEXT);
+    CREATE TABLE IF NOT EXISTS feedback_records(id TEXT PRIMARY KEY, metric_key TEXT, planned_value REAL, actual_value REAL, deviation_rate REAL, evidence TEXT, suggested_action TEXT, status TEXT, created_at TEXT);
   `);
 }
 
 export function resetDatabase(db) {
   db.exec('BEGIN IMMEDIATE');
   try {
-    for (const table of ['shift_adjustments','rule_validation_logs','shifts','schedule_plan_shifts','schedule_plans','business_demands','calendar_days','leave_requests','employee_availability','agent_steps','agent_runs','cost_allocations','compliance_checks','transfer_orders','transfer_suggestions','shortage_events','rule_optimization_suggestions','rule_draft_items','rule_drafts','rule_versions','rules','employees','stores']) db.exec(`DELETE FROM ${table}`);
+    for (const table of ['feedback_records','operational_events','attendance_records','schedule_notifications','demand_forecasts','shift_adjustments','rule_validation_logs','shifts','schedule_plan_shifts','schedule_plans','business_demands','calendar_days','leave_requests','employee_availability','agent_steps','agent_runs','cost_allocations','compliance_checks','transfer_orders','transfer_suggestions','shortage_events','rule_optimization_suggestions','rule_draft_items','rule_drafts','rule_versions','rules','employees','stores']) db.exec(`DELETE FROM ${table}`);
     const store = db.prepare('INSERT INTO stores VALUES(?,?,?,?)');
     [['store-a','A','上海静安店','上海'],['store-b','B','上海徐汇店','上海'],['store-c','C','上海浦东店','上海']].forEach(x=>store.run(...x));
     const employee = db.prepare('INSERT INTO employees VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
@@ -88,6 +93,18 @@ export function resetDatabase(db) {
     const insertRule=db.prepare('INSERT INTO rules VALUES(?,?,?,?,?,?,?,?,?,?,?)');
     const insertVersion=db.prepare('INSERT INTO rule_versions VALUES(?,?,?,?,?,?,?)');
     for (const r of rules) { insertRule.run(r[0],r[1],r[2],r[3],j(r[4]),r[5],r[6],1,'active',r[7],now()); insertVersion.run(randomUUID(),r[0],1,j(r[4]),'demo_seed','比赛演示初始规则',now()); }
+    const seedShifts=[['shift-history-1','e07','store-a','收银','2026-08-01T09:00:00.000Z','2026-08-01T17:00:00.000Z'],['shift-history-2','e08','store-a','理货','2026-08-01T09:00:00.000Z','2026-08-01T17:00:00.000Z']];
+    for(const s of seedShifts)db.prepare('INSERT INTO shifts VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(...s,'agent_plan','completed',null,'2026-07-31T10:00:00.000Z','2026-08-01T18:00:00.000Z');
+    db.prepare('INSERT INTO schedule_notifications VALUES(?,?,?,?,?,?,?,?)').run('notice-1','shift-history-1','e07','应用内','read','8月1日 A门店收银班次已下发','2026-07-31T10:01:00.000Z','2026-07-31T10:05:00.000Z');
+    db.prepare('INSERT INTO schedule_notifications VALUES(?,?,?,?,?,?,?,?)').run('notice-2','shift-history-2','e08','应用内','sent','8月1日 A门店理货班次已下发','2026-07-31T10:01:00.000Z',null);
+    const punch=db.prepare('INSERT INTO attendance_records VALUES(?,?,?,?,?,?,?,?,?)');
+    punch.run('att-1','e07','shift-history-1','clock_in','2026-08-01T08:58:00.000Z','移动打卡',1,null,'2026-08-01T08:58:00.000Z');punch.run('att-2','e07','shift-history-1','clock_out','2026-08-01T17:06:00.000Z','移动打卡',1,null,'2026-08-01T17:06:00.000Z');punch.run('att-3','e08','shift-history-2','clock_in','2026-08-01T09:12:00.000Z','门禁',1,'LATE','2026-08-01T09:12:00.000Z');
+    db.prepare('INSERT INTO demand_forecasts VALUES(?,?,?,?,?,?,?,?,?,?,?)').run('forecast-1','store-a','2026-08-01','客流',760,820,3,'stat-v1',790,-3.7,'2026-07-31T09:00:00.000Z');
+    db.prepare('INSERT INTO operational_events VALUES(?,?,?,?,?,?,?,?,?,?,?)').run('event-1','late','store-a','e08','shift-history-2','2026-08-01T09:12:00.000Z','resolved',j({minutes:12}),j({action:'主管已确认到岗，不触发补位'}),'2026-08-01T09:12:00.000Z','2026-08-01T09:20:00.000Z');
+    db.prepare('INSERT INTO operational_events VALUES(?,?,?,?,?,?,?,?,?,?,?)').run('event-2','traffic_surge','store-a',null,null,'2026-08-08T11:00:00.000Z','analyzed',j({forecast:980,actual:1180,deviationRate:20.4,requiredExtra:1}),j({action:'increase_staffing',summary:'客流超预测，建议增加1名收银人员',requiredExtra:1,status:'pending_manager_confirmation'}),'2026-08-08T11:00:00.000Z',null);
+    db.prepare('INSERT INTO feedback_records VALUES(?,?,?,?,?,?,?,?,?)').run('feedback-1','客流预测',820,790,-3.7,'8月1日实际客流790，较预测少30','下一周期同类工作日预测系数下调2%','ready','2026-08-01T20:00:00.000Z');
+    db.prepare('INSERT INTO agent_runs VALUES(?,?,?,?,?,?,?,?)').run('agent-run-1','schedule_agent','A门店8月1日客流预测与排班','completed','gaia_agent','已完成预测、排班、合规、下发和回流','2026-07-31T09:00:00.000Z','2026-08-01T20:00:00.000Z');
+    const step=db.prepare('INSERT INTO agent_steps VALUES(?,?,?,?,?,?)');[['意图解析','识别A门店客流目标',{passed:true}],['需求预测','预测客流820，转换3人需求',{requiredHeadcount:3}],['多目标方案','选择综合最优方案',{coverage:100}],['合规前置','5条规则全部通过',{passed:true}],['方案下发','2条通知已发送',{notifications:2}],['偏差复盘','实际客流790，偏差-3.7%',{deviationRate:-3.7}]].forEach((x,i)=>step.run(`agent-step-${i+1}`,'agent-run-1',x[0],x[1],j(x[2]),`2026-08-01T${String(9+i*2).padStart(2,'0')}:00:00.000Z`));
     db.exec('COMMIT');
     return { resetAt:now(), stores:3, employees:9, rules:5 };
   } catch (e) { db.exec('ROLLBACK'); throw e; }
