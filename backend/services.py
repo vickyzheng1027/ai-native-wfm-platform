@@ -8,6 +8,7 @@ import threading
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from .ai import AIClient, classify_intent, rag_answer
 from .db import dumps, loads, rowdict, transaction, utcnow
@@ -81,14 +82,53 @@ def attendance_overview(db,user,start,end):
     return {"employees":[{"id":x["id"],"name":x["name"],"code":x["code"],"role":x["role"]} for x in employees],"records":data,"balances":balances,"summary":{"attendance_rate":round(normal/expected*100,1) if expected else 0,"exceptions":exceptions,"leave_records":sum(x["event_type"]=="leave" for x in data),"overtime_hours":sum(x["hours"] or 0 for x in data if x["event_type"]=="overtime")}}
 
 
-def parse_schedule_parameters(text):
-    current_year=datetime.now().year;date_matches=re.findall(r"(?:(\d{4})[-年])?(\d{1,2})[-月](\d{1,2})日?",text)
+def business_today():
+    return datetime.now(ZoneInfo(os.getenv("WFM_TIMEZONE","Asia/Shanghai"))).date()
+
+
+def resolve_schedule_period(text,today=None):
+    today=today or business_today();current_year=today.year
+    date_matches=re.findall(r"(?:(\d{4})[-年])?(\d{1,2})[-月](\d{1,2})日?",str(text))
     normalized=[f"{int(year or current_year):04d}-{int(month):02d}-{int(day):02d}" for year,month,day in date_matches]
-    start=normalized[0] if normalized else f"{current_year}-08-06"
-    end=normalized[-1] if normalized else f"{current_year}-08-08"
+    if normalized:return normalized[0],normalized[-1]
+    if "今天" in text:return today.isoformat(),today.isoformat()
+    if "后天" in text:
+        target=today+timedelta(days=2);return target.isoformat(),target.isoformat()
+    if "明天" in text:
+        target=today+timedelta(days=1);return target.isoformat(),target.isoformat()
+    monday=today-timedelta(days=today.weekday())
+    if "本周末" in text or "这周末" in text:
+        return (monday+timedelta(days=5)).isoformat(),(monday+timedelta(days=6)).isoformat()
+    if "下周末" in text:
+        return (monday+timedelta(days=12)).isoformat(),(monday+timedelta(days=13)).isoformat()
+    weekdays={"一":0,"二":1,"三":2,"四":3,"五":4,"六":5,"日":6,"天":6}
+    relative_matches=re.findall(r"(本|这|下下|下)?(?:周|星期)([一二三四五六日天])",str(text))
+    resolved=[]
+    for prefix,weekday in relative_matches:
+        target_index=weekdays[weekday]
+        if prefix in ("本","这"):target=monday+timedelta(days=target_index)
+        elif prefix=="下":target=monday+timedelta(days=7+target_index)
+        elif prefix=="下下":target=monday+timedelta(days=14+target_index)
+        else:target=today+timedelta(days=(target_index-today.weekday())%7)
+        resolved.append(target.isoformat())
+    if resolved:return resolved[0],resolved[-1]
+    if "下周" in text:return (monday+timedelta(days=7)).isoformat(),(monday+timedelta(days=13)).isoformat()
+    if "本周" in text or "这周" in text:return today.isoformat(),(monday+timedelta(days=6)).isoformat()
+    return None,None
+
+
+def parse_schedule_parameters(text,today=None):
+    start,end=resolve_schedule_period(text,today)
     coverage=float(re.search(r"覆盖率[^\d]*(\d+(?:\.\d+)?)",text).group(1)) if re.search(r"覆盖率[^\d]*(\d+(?:\.\d+)?)",text) else 95
     cost=float(re.search(r"成本[^\d]*(\d+(?:\.\d+)?)%",text).group(1)) if re.search(r"成本[^\d]*(\d+(?:\.\d+)?)%",text) else 8
     return {"start_date":start,"end_date":end,"coverage_target":coverage,"cost_increase_limit":cost,"minimize_nights":"夜班" in text,"raw_constraints":[]}
+
+
+def normalize_model_date(value,today=None):
+    if not value:return None
+    try:return datetime.fromisoformat(str(value)).date().isoformat()
+    except ValueError:
+        start,_=resolve_schedule_period(str(value),today);return start
 
 
 def task_store_id(db,user,params):
@@ -136,7 +176,9 @@ def create_task(db,user,text,context="auto",trigger_event_id=None):
     if not text.strip():raise ApiError("请输入真实业务目标或事务内容")
     client=AIClient(db);intent=classify_intent(client,user,text,context)
     task_id=uid("task");params={k:v for k,v in (intent.get("parameters") or {}).items() if v not in (None,"")}
-    if intent["intent"]=="schedule_create":params={**parse_schedule_parameters(text),**params}
+    if intent["intent"]=="schedule_create":
+        local=parse_schedule_parameters(text);model_start=normalize_model_date(params.get("start_date"));model_end=normalize_model_date(params.get("end_date"))
+        params={**local,**{key:value for key,value in params.items() if key not in ("start_date","end_date")},"start_date":model_start or local["start_date"],"end_date":model_end or model_start or local["end_date"]}
     db.execute("INSERT INTO tasks VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(task_id,user["id"],intent["context"],text,intent["intent"],"queued",0,dumps(params),dumps([]),trigger_event_id,1,None,utcnow(),None));db.commit()
     audit(db,user,"task.create","task",task_id,details={"intent":intent["intent"],"mode":intent["mode"]})
     if intent["intent"]=="schedule_create":threading.Thread(target=run_schedule_task,args=(db,task_id,user),daemon=True).start()

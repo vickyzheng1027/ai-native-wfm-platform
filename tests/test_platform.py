@@ -1,11 +1,13 @@
 import os
 import time
 import unittest
+from datetime import date
 from pathlib import Path
+from unittest.mock import patch
 
 from backend.ai import AIClient, classify_intent, rag_answer
 from backend.db import connect, verify_password
-from backend.services import ApiError, activate_plan, anomalies, approve_rule, attendance_overview, automation_event, create_rule, create_task, decide_employee_request, employee_agent, employee_insights, employee_list, overview, period_review, publish_plan, save_employee, task_detail, update_anomaly
+from backend.services import ApiError, activate_plan, anomalies, approve_rule, attendance_overview, automation_event, create_rule, create_task, decide_employee_request, employee_agent, employee_insights, employee_list, normalize_model_date, overview, parse_schedule_parameters, period_review, publish_plan, save_employee, task_detail, update_anomaly
 
 
 class FlowStaffTests(unittest.TestCase):
@@ -131,6 +133,36 @@ class FlowStaffTests(unittest.TestCase):
         self.assertEqual(len(task["plans"]),2)
         self.assertEqual(sum(x["recommended"] for x in task["plans"]),1)
         self.assertNotEqual(task["plans"][0]["strategy"],task["plans"][1]["strategy"])
+
+    def test_relative_business_dates_resolve_against_current_week(self):
+        reference=date(2026,8,5)
+        self.assertEqual(parse_schedule_parameters("请安排本周五排班",reference)["start_date"],"2026-08-07")
+        self.assertEqual(parse_schedule_parameters("请安排本周五排班",reference)["end_date"],"2026-08-07")
+        self.assertEqual(parse_schedule_parameters("安排下周五",reference)["start_date"],"2026-08-14")
+        self.assertEqual(parse_schedule_parameters("安排本周末",reference)["start_date"],"2026-08-08")
+        self.assertEqual(parse_schedule_parameters("安排本周末",reference)["end_date"],"2026-08-09")
+
+    def test_model_relative_date_is_normalized_before_database_query(self):
+        self.assertEqual(normalize_model_date("本周五",date(2026,8,5)),"2026-08-07")
+        self.assertEqual(normalize_model_date("2026-08-07",date(2026,8,5)),"2026-08-07")
+
+    def test_this_friday_request_generates_shifts_for_resolved_date(self):
+        with patch("backend.services.business_today",return_value=date(2026,8,5)):
+            result=create_task(self.db,self.manager,"请安排本周五排班，覆盖率目标95%","store_management")
+        for _ in range(100):
+            task=task_detail(self.db,self.manager,result["task_id"])
+            if task["status"] in ("completed","failed"):break
+            time.sleep(.02)
+        self.assertEqual(task["status"],"completed",task.get("error"))
+        self.assertEqual(task["parameters"]["start_date"],"2026-08-07")
+        self.assertEqual(task["parameters"]["end_date"],"2026-08-07")
+        self.assertTrue(all(plan["shifts"] for plan in task["plans"]))
+        self.assertTrue(all(shift["start_at"].startswith("2026-08-07") for plan in task["plans"] for shift in plan["shifts"]))
+
+    def test_schedule_request_without_any_date_does_not_use_hidden_default(self):
+        parsed=parse_schedule_parameters("帮我生成排班",date(2026,8,5))
+        self.assertIsNone(parsed["start_date"])
+        self.assertIsNone(parsed["end_date"])
 
     def test_schedule_task_forecasts_future_demand_instead_of_recommending_empty_plans(self):
         result=create_task(self.db,self.manager,"请生成8月10日的排班，覆盖率目标95%","store_management")

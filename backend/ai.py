@@ -6,6 +6,8 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from .db import dumps, loads, utcnow
 
@@ -104,7 +106,8 @@ INTENT_SCHEMA={"type":"object","additionalProperties":False,"properties":{
 
 
 def classify_intent(client,user,text,requested_context="auto"):
-    system="""你是 FlowStaff AI 的意图理解 Agent。只识别 WFM 业务意图和结构化参数。主管既可能管理门店，也可能办理本人事务。日期没有年份时使用 2026 年。不得虚构用户未输入的日期、人数或业务目标。"""
+    today=datetime.now(ZoneInfo(os.getenv("WFM_TIMEZONE","Asia/Shanghai"))).date().isoformat()
+    system=f"""你是 FlowStaff AI 的意图理解 Agent。只识别 WFM 业务意图和结构化参数。主管既可能管理门店，也可能办理本人事务。当前业务日期是 {today}。需要理解今天、明天、本周五、下周等相对日期并输出 YYYY-MM-DD。不得虚构用户未输入的日期、人数或业务目标。"""
     prompt=f"用户角色：{user['role']}；可访问门店：{user.get('store_id') or '组织范围'}；上下文选择：{requested_context}；用户输入：{text}"
     if client.enabled:
         result=client.structured(user["id"],"intent_classification",system,prompt,INTENT_SCHEMA)
