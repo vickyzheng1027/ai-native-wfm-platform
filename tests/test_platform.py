@@ -1,6 +1,7 @@
 import os
 import time
 import unittest
+from pathlib import Path
 
 from backend.ai import AIClient, classify_intent, rag_answer
 from backend.db import connect, verify_password
@@ -25,6 +26,15 @@ class FlowStaffTests(unittest.TestCase):
         self.assertGreaterEqual(self.db.execute("SELECT COUNT(*) n FROM employee_skills").fetchone()["n"],20)
         self.assertEqual(self.db.execute("SELECT COUNT(*) n FROM rules").fetchone()["n"],6)
         self.assertEqual(self.db.execute("SELECT COUNT(*) n FROM anomaly_events").fetchone()["n"],3)
+
+    def test_login_and_application_shells_respect_hidden_state(self):
+        root=Path(__file__).parents[1]
+        html=(root/"public"/"index.html").read_text(encoding="utf-8")
+        css=(root/"public"/"styles.css").read_text(encoding="utf-8")
+        script=(root/"public"/"app.js").read_text(encoding="utf-8")
+        self.assertIn('id="appView" class="app-shell" hidden',html)
+        self.assertIn('[hidden]{display:none!important}',css)
+        self.assertIn('loginView.hidden=true;appView.hidden=false',script)
 
     def test_passwords_are_pbkdf2_hashes(self):
         encoded=self.manager["password_hash"]
