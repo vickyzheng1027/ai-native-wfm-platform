@@ -3,19 +3,19 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>FlowStaff AI | AI Native Workforce Management</title>
+  <title>FlowStaff AI｜智能劳动力管理平台</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
   <div id="loginView" class="login-shell">
     <section class="login-brand">
       <div class="brand-lockup"><span class="brand-mark">F</span><span>FlowStaff AI</span></div>
-      <div class="login-statement"><span class="eyebrow">AI NATIVE WORKFORCE MANAGEMENT</span><h1>让每一次排班决策<br>都有依据、有解释、有反馈。</h1><p>从业务意图到班表发布，从员工事务到策略进化，一条可审计的智能劳动力闭环。</p></div>
+      <div class="login-statement"><span class="eyebrow">AI 原生劳动力管理平台</span><h1>让每一次排班决策<br>都有依据、有解释、有反馈。</h1><p>从业务意图到班表发布，从员工事务到策略进化，一条可审计的智能劳动力闭环。</p></div>
       <div class="login-proof"><span>实时意图理解</span><span>合规前置</span><span>主管最终确认</span></div>
     </section>
     <section class="login-panel">
       <form id="loginForm" class="login-card">
-        <div><span class="eyebrow dark">WELCOME BACK</span><h2>登录决策中心</h2><p>使用你的 FlowStaff 账号继续</p></div>
+        <div><span class="eyebrow dark">欢迎回来</span><h2>登录决策中心</h2><p>使用你的 FlowStaff 账号继续</p></div>
         <label>账号<input id="loginUsername" value="manager" autocomplete="username"></label>
         <label>密码<input id="loginPassword" type="password" value="Manager123!" autocomplete="current-password"></label>
         <button class="button primary large" type="submit">进入系统 <span>→</span></button>
@@ -27,16 +27,16 @@
 
   <div id="appView" class="app-shell" hidden>
     <aside class="sidebar">
-      <div class="side-brand"><span class="brand-mark">F</span><div><b>FlowStaff</b><span>AI Workforce OS</span></div></div>
+      <div class="side-brand"><span class="brand-mark">F</span><div><b>FlowStaff</b><span>智能劳动力系统</span></div></div>
       <nav id="navigation" class="navigation"></nav>
       <div class="side-user"><div id="userAvatar" class="avatar">林</div><div><b id="userName">加载中</b><span id="userRole">—</span></div><button id="logoutBtn" title="退出登录">↗</button></div>
     </aside>
     <div class="app-main">
-      <header class="topbar"><div><span id="pageEyebrow" class="eyebrow dark">INTELLIGENCE CENTER</span><h1 id="pageTitle">AI 指挥台</h1></div><div class="top-actions"><span id="aiStatus" class="system-status">模型检测中</span><button id="refreshBtn" class="icon-button" title="刷新">↻</button></div></header>
+      <header class="topbar"><div><span id="pageEyebrow" class="eyebrow dark">智能决策中心</span><h1 id="pageTitle">AI 指挥台</h1></div><div class="top-actions"><span id="aiStatus" class="system-status">模型检测中</span><button id="refreshBtn" class="icon-button" title="刷新">↻</button></div></header>
       <main id="content" class="content" tabindex="-1"></main>
     </div>
   </div>
-  <div id="drawer" class="drawer-mask" hidden><section class="drawer"><header><div><span class="eyebrow dark">DETAIL</span><h2 id="drawerTitle"></h2></div><button id="drawerClose" class="icon-button">×</button></header><div id="drawerBody" class="drawer-body"></div></section></div>
+  <div id="drawer" class="drawer-mask" hidden><section class="drawer"><header><div><span class="eyebrow dark">详细信息</span><h2 id="drawerTitle"></h2></div><button id="drawerClose" class="icon-button" title="关闭">×</button></header><div id="drawerBody" class="drawer-body"></div></section></div>
   <div id="toast" class="toast" aria-live="polite"></div>
   <script src="/app.js"></script>
 </body>

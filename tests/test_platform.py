@@ -43,6 +43,22 @@ class FlowStaffTests(unittest.TestCase):
         self.assertIn('<details class="technical-details">',script)
         self.assertNotIn('<h2>结构化理解</h2>',script)
 
+    def test_visible_navigation_and_business_statuses_are_localized(self):
+        root=Path(__file__).parents[1]
+        html=(root/"public"/"index.html").read_text(encoding="utf-8")
+        script=(root/"public"/"app.js").read_text(encoding="utf-8")
+        self.assertNotIn("INTELLIGENCE CENTER",html+script)
+        self.assertNotIn("WELCOME BACK",html)
+        self.assertIn("completed:'已完成'",script)
+        self.assertIn("high:'高风险'",script)
+        self.assertIn("demand_spike:'客流或订单突增'",script)
+
+    def test_business_text_uses_readable_font_scale(self):
+        css=(Path(__file__).parents[1]/"public"/"styles.css").read_text(encoding="utf-8")
+        self.assertIn("table{font-size:13px}",css)
+        self.assertIn(".badge{font-size:12px",css)
+        self.assertIn(".form-field label{font-size:13px}",css)
+
     def test_passwords_are_pbkdf2_hashes(self):
         encoded=self.manager["password_hash"]
         self.assertTrue(encoded.startswith("pbkdf2_sha256$"))
