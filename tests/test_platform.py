@@ -336,6 +336,30 @@ class FlowStaffTests(unittest.TestCase):
         rule=next(item for item in rule_list(self.db) if item["id"]=="rule-5")
         self.assertEqual(rule["store_id"],"store-a")
         self.assertEqual(rule["store_name"],"上海静安旗舰店")
+        self.assertTrue(rule["effective_from"])
+        self.assertIsNone(rule["effective_to"])
+
+    def test_store_rule_defaults_to_today_and_no_expiration(self):
+        with patch("backend.services.business_today",return_value=date(2026,8,6)):
+            result=create_rule(self.db,self.manager,{"text":"静安店晚高峰至少安排一名资深导购","store_id":"store-a"},AIClient(self.db))
+        self.assertEqual(result["rule"]["effective_from"],"2026-08-06")
+        self.assertIsNone(result["rule"]["effective_to"])
+
+    def test_store_rule_uses_dates_stated_by_user(self):
+        with patch("backend.services.business_today",return_value=date(2026,8,6)):
+            result=create_rule(self.db,self.manager,{"text":"静安店规则从8月8日生效，8月31日失效","store_id":"store-a"},AIClient(self.db))
+        self.assertEqual(result["rule"]["effective_from"],"2026-08-08")
+        self.assertEqual(result["rule"]["effective_to"],"2026-08-31")
+
+    def test_user_stated_dates_override_model_dates(self):
+        class ModelStub:
+            enabled=True
+            def structured(self,*args):
+                return {"name":"门店高峰规则","description":"测试原文日期优先级","scope":"store","strength":"soft","domain":"schedule","effective_from":"2026-09-01","effective_to":"2026-09-30","definition":{},"confidence":.9,"conflicts":[]}
+        with patch("backend.services.business_today",return_value=date(2026,8,6)):
+            result=create_rule(self.db,self.manager,{"text":"静安店规则从8月8日生效，8月31日失效","store_id":"store-a"},ModelStub())
+        self.assertEqual(result["rule"]["effective_from"],"2026-08-08")
+        self.assertEqual(result["rule"]["effective_to"],"2026-08-31")
 
     def test_rule_update_persists_new_version_and_snapshot(self):
         before=next(item for item in rule_list(self.db) if item["id"]=="rule-5")
@@ -351,6 +375,10 @@ class FlowStaffTests(unittest.TestCase):
         self.assertEqual(updated["status"],"pending_approval")
         self.assertIsNone(updated["store_id"])
 
+    def test_rule_update_rejects_reversed_validity_period(self):
+        with self.assertRaisesRegex(ApiError,"失效日期不能早于生效日期"):
+            update_rule(self.db,self.manager,"rule-5",{"name":"日期错误规则","description":"日期范围不合法","scope":"store","store_id":"store-a","effective_from":"2026-08-31","effective_to":"2026-08-08","strength":"soft","domain":"skills"})
+
     def test_manager_cannot_update_another_store_rule(self):
         self.db.execute("UPDATE rules SET store_id='store-b' WHERE id='rule-5'");self.db.commit()
         with self.assertRaisesRegex(ApiError,"授权门店"):
@@ -364,6 +392,8 @@ class FlowStaffTests(unittest.TestCase):
         self.assertIn('data-edit-rule="${r.id}"',script)
         self.assertIn("method:'PUT'",script)
         self.assertIn("`/api/rules/${rule.id}`",script)
+        self.assertIn("失效日期（留空为长期有效）",script)
+        self.assertIn("<th>有效期</th>",script)
 
     def test_manager_can_decide_employee_request_in_own_store(self):
         created=employee_agent(self.db,self.employee,"我8月8日需要请假")

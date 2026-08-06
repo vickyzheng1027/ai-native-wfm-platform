@@ -451,19 +451,34 @@ def rule_list(db):
     return result
 
 
+def rule_validity(text,parsed,today=None):
+    today=today or business_today();effective=normalize_model_date(parsed.get("effective_from"),today);expires=normalize_model_date(parsed.get("effective_to"),today)
+    start,end=resolve_schedule_period(text,today)
+    if start==end and start:
+        if any(word in text for word in ("失效","到期","截止")) and "生效" not in text:expires=start
+        else:effective=start
+    elif start:
+        effective,expires=start,end
+    effective=effective or today.isoformat()
+    if expires and expires<effective:raise ApiError("规则失效日期不能早于生效日期")
+    return effective,expires
+
+
 def create_rule(db,user,body,client):
     if user["role"] not in ("admin","manager","hr"):raise ApiError("无规则创建权限",403,"FORBIDDEN")
     text=str(body.get("text","")).strip()
     if not text:raise ApiError("请输入真实规则内容")
-    schema={"type":"object","additionalProperties":False,"properties":{"name":{"type":"string"},"description":{"type":"string"},"scope":{"type":"string","enum":["company","store","temporary"]},"strength":{"type":"string","enum":["hard","soft","notice"]},"domain":{"type":"string","enum":["schedule","hours","leave","fatigue","coverage","skills"]},"definition":{"type":"object","additionalProperties":False,"properties":{"field":{"type":["string","null"]},"operator":{"type":["string","null"]},"value":{"type":["number","boolean","string","null"]},"unit":{"type":["string","null"]},"schedule_scope":{"type":["string","null"]}},"required":["field","operator","value","unit","schedule_scope"]},"confidence":{"type":"number"},"conflicts":{"type":"array","items":{"type":"string"}}},"required":["name","description","scope","strength","domain","definition","confidence","conflicts"]}
-    if client.enabled:parsed=client.structured(user["id"],"rule_parse","将自然语言 WFM 规则转换为可审批结构。不得虚构数值。",text,schema);mode="live_llm"
-    else:parsed={"name":text[:24],"description":text,"scope":"store" if user["role"]=="manager" else "company","strength":"soft","domain":"schedule","definition":{"raw":text},"confidence":.45,"conflicts":[]};mode="deterministic_fallback"
+    schema={"type":"object","additionalProperties":False,"properties":{"name":{"type":"string"},"description":{"type":"string"},"scope":{"type":"string","enum":["company","store","temporary"]},"strength":{"type":"string","enum":["hard","soft","notice"]},"domain":{"type":"string","enum":["schedule","hours","leave","fatigue","coverage","skills"]},"effective_from":{"type":["string","null"]},"effective_to":{"type":["string","null"]},"definition":{"type":"object","additionalProperties":False,"properties":{"field":{"type":["string","null"]},"operator":{"type":["string","null"]},"value":{"type":["number","boolean","string","null"]},"unit":{"type":["string","null"]},"schedule_scope":{"type":["string","null"]}},"required":["field","operator","value","unit","schedule_scope"]},"confidence":{"type":"number"},"conflicts":{"type":"array","items":{"type":"string"}}},"required":["name","description","scope","strength","domain","effective_from","effective_to","definition","confidence","conflicts"]}
+    today=business_today()
+    if client.enabled:parsed=client.structured(user["id"],"rule_parse",f"将自然语言 WFM 规则转换为可审批结构。当前业务日期为 {today.isoformat()}。用户明确提到的生效、失效、截止或到期日期必须转换为 YYYY-MM-DD；未提到的日期返回 null，不得虚构数值。",text,schema);mode="live_llm"
+    else:parsed={"name":text[:24],"description":text,"scope":"store" if user["role"]=="manager" else "company","strength":"soft","domain":"schedule","effective_from":None,"effective_to":None,"definition":{"raw":text},"confidence":.45,"conflicts":[]};mode="deterministic_fallback"
     store_id=(body.get("store_id") or user.get("store_id")) if parsed["scope"]=="store" else None
+    effective_from,effective_to=rule_validity(text,parsed,today) if parsed["scope"]=="store" else (None,None)
     if parsed["scope"]=="store":
         if not store_id or not db.execute("SELECT 1 FROM stores WHERE id=?",(store_id,)).fetchone():raise ApiError("门店级规则必须选择有效的适用门店")
         if user["role"]=="manager" and store_id!=user.get("store_id"):raise ApiError("只能创建授权门店规则",403,"FORBIDDEN")
     status="pending_approval" if parsed["scope"]=="company" or parsed["strength"]=="hard" else "active"
-    rule_id=uid("rule");db.execute("INSERT INTO rules VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(rule_id,parsed["name"],parsed["description"],parsed["scope"],parsed["strength"],parsed["domain"],dumps(parsed["definition"]),status,1,"ai_parsed",parsed["confidence"],user["id"],None,utcnow(),utcnow(),store_id));db.commit();audit(db,user,"rule.create","rule",rule_id,details={"mode":mode,"conflicts":parsed["conflicts"],"store_id":store_id})
+    rule_id=uid("rule");db.execute("INSERT INTO rules VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(rule_id,parsed["name"],parsed["description"],parsed["scope"],parsed["strength"],parsed["domain"],dumps(parsed["definition"]),status,1,"ai_parsed",parsed["confidence"],user["id"],None,utcnow(),utcnow(),store_id,effective_from,effective_to));db.commit();audit(db,user,"rule.create","rule",rule_id,details={"mode":mode,"conflicts":parsed["conflicts"],"store_id":store_id,"effective_from":effective_from,"effective_to":effective_to})
     return {"rule":next(x for x in rule_list(db) if x["id"]==rule_id),"analysis":parsed,"mode":mode,"impact":{"employees":db.execute("SELECT COUNT(*) n FROM employees WHERE status='active'").fetchone()["n"],"shifts":db.execute("SELECT COUNT(*) n FROM shifts WHERE status='published'").fetchone()["n"]}}
 
 
@@ -480,12 +495,15 @@ def update_rule(db,user,rule_id,body):
     if scope=="store":
         if not store_id or not db.execute("SELECT 1 FROM stores WHERE id=?",(store_id,)).fetchone():raise ApiError("门店级规则必须选择适用门店")
         if user["role"]=="manager" and store_id!=user.get("store_id"):raise ApiError("只能修改授权门店规则",403,"FORBIDDEN")
+        effective_from=normalize_model_date(body.get("effective_from")) or business_today().isoformat();effective_to=normalize_model_date(body.get("effective_to"))
+        if effective_to and effective_to<effective_from:raise ApiError("规则失效日期不能早于生效日期")
+    else:effective_from,effective_to=None,None
     if user["role"]=="manager" and (scope!="store" or strength=="hard"):raise ApiError("门店主管只能维护本门店的软约束或提示规则",403,"FORBIDDEN")
     status="pending_approval" if scope=="company" or strength=="hard" else "active";new_version=current["version"]+1;now=utcnow()
     with transaction(db):
         db.execute("INSERT INTO rule_versions VALUES(?,?,?,?,?,?)",(uid("rule-version"),rule_id,current["version"],dumps(current),user["id"],now))
-        db.execute("UPDATE rules SET name=?,description=?,scope=?,strength=?,domain=?,status=?,version=?,approved_by=NULL,updated_at=?,store_id=? WHERE id=?",(name,description,scope,strength,domain,status,new_version,now,store_id,rule_id))
-    audit(db,user,"rule.update","rule",rule_id,details={"from_version":current["version"],"to_version":new_version,"store_id":store_id})
+        db.execute("UPDATE rules SET name=?,description=?,scope=?,strength=?,domain=?,status=?,version=?,approved_by=NULL,updated_at=?,store_id=?,effective_from=?,effective_to=? WHERE id=?",(name,description,scope,strength,domain,status,new_version,now,store_id,effective_from,effective_to,rule_id))
+    audit(db,user,"rule.update","rule",rule_id,details={"from_version":current["version"],"to_version":new_version,"store_id":store_id,"effective_from":effective_from,"effective_to":effective_to})
     return next(x for x in rule_list(db) if x["id"]==rule_id)
 
 
