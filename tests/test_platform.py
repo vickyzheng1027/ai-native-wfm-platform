@@ -171,7 +171,7 @@ class FlowStaffTests(unittest.TestCase):
             time.sleep(.02)
         self.assertEqual(task["status"],"completed",task.get("error"))
         self.assertEqual(len(task["steps"]),6)
-        self.assertEqual(len(task["plans"]),3)
+        self.assertEqual(len(task["plans"]),2)
         self.assertEqual(sum(x["recommended"] for x in task["plans"]),1)
         self.assertNotEqual(task["plans"][0]["strategy"],task["plans"][1]["strategy"])
 
@@ -191,6 +191,15 @@ class FlowStaffTests(unittest.TestCase):
         self.assertEqual(parse_schedule_parameters("完成本月的排班",date(2026,8,6))["start_date"],"2026-08-01")
         self.assertEqual(parse_schedule_parameters("完成本月的排班",date(2026,8,6))["end_date"],"2026-08-31")
 
+    def test_retail_promotion_goal_parses_peak_periods_and_controls(self):
+        parsed=parse_schedule_parameters("下周末有促销活动，客流高峰集中在下午和晚上，希望控制加班和夜班",date(2026,8,6))
+        self.assertEqual(parsed["start_date"],"2026-08-15")
+        self.assertEqual(parsed["end_date"],"2026-08-16")
+        self.assertEqual(parsed["activity_type"],"促销活动")
+        self.assertEqual(parsed["peak_periods"],["afternoon","evening"])
+        self.assertTrue(parsed["overtime_control"])
+        self.assertTrue(parsed["night_shift_control"])
+
     def test_schedule_without_store_waits_for_explicit_confirmation(self):
         with patch("backend.services.business_today",return_value=date(2026,8,6)):
             result=create_task(self.db,self.manager,"完成本月的排班","store_management")
@@ -209,11 +218,11 @@ class FlowStaffTests(unittest.TestCase):
             if task["status"] in ("completed","failed"):break
             time.sleep(.02)
         self.assertEqual(task["status"],"completed",task.get("error"))
-        self.assertEqual(len(task["plans"]),3)
+        self.assertEqual(len(task["plans"]),2)
         self.assertGreater(len({shift["start_at"][:10] for shift in task["plans"][0]["shifts"]}),3)
         self.assertEqual(len(schedule_history(self.db,self.manager,"2026-08-01","2026-08-31")),official_before)
         workspace=schedule_workspace(self.db,self.manager,"2026-08-01","2026-08-31",task["id"])
-        self.assertEqual(len(workspace["plans"]),3)
+        self.assertEqual(len(workspace["plans"]),2)
         chosen=task["plans"][0]["id"]
         activate_plan(self.db,self.manager,chosen);publish_plan(self.db,self.manager,chosen)
         self.assertGreater(len(schedule_history(self.db,self.manager,"2026-08-01","2026-08-31")),official_before)
@@ -300,7 +309,7 @@ class FlowStaffTests(unittest.TestCase):
             if task["status"] in ("completed","failed"):break
             time.sleep(.02)
         self.assertEqual(task["status"],"completed",task.get("error"))
-        self.assertEqual(len(task["plans"]),3)
+        self.assertEqual(len(task["plans"]),2)
         self.assertTrue(all(plan["metrics"]["required"]>0 for plan in task["plans"]))
         self.assertTrue(all(plan["shifts"] for plan in task["plans"]))
         self.assertGreater(self.db.execute("SELECT COUNT(*) n FROM business_demands WHERE demand_date='2026-08-10'").fetchone()["n"],0)

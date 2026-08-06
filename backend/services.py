@@ -162,7 +162,12 @@ def parse_schedule_parameters(text,today=None):
     start,end=resolve_schedule_period(text,today);demand_items=parse_explicit_staffing_items(text);role=demand_items[0]["role"] if len(demand_items)==1 else None;headcount=demand_items[0]["headcount"] if len(demand_items)==1 else None
     coverage=float(re.search(r"覆盖率[^\d]*(\d+(?:\.\d+)?)",text).group(1)) if re.search(r"覆盖率[^\d]*(\d+(?:\.\d+)?)",text) else 95
     cost=float(re.search(r"成本[^\d]*(\d+(?:\.\d+)?)%",text).group(1)) if re.search(r"成本[^\d]*(\d+(?:\.\d+)?)%",text) else 8
-    return {"start_date":start,"end_date":end,"role":role,"headcount":headcount,"demand_items":demand_items,"coverage_target":coverage,"cost_increase_limit":cost,"minimize_nights":"夜班" in text,"raw_constraints":[]}
+    peaks=[]
+    if any(word in text for word in ("早晨","早上","上午")):peaks.append("morning")
+    if "下午" in text:peaks.append("afternoon")
+    if any(word in text for word in ("晚上","晚间","夜间")):peaks.append("evening")
+    activity="促销活动" if any(word in text for word in ("促销","大促","活动")) else "日常经营"
+    return {"start_date":start,"end_date":end,"role":role,"headcount":headcount,"demand_items":demand_items,"activity_type":activity,"peak_periods":peaks,"overtime_control":"加班" in text,"night_shift_control":"夜班" in text,"coverage_target":coverage,"cost_increase_limit":cost,"minimize_nights":"夜班" in text,"raw_constraints":[]}
 
 
 def normalize_model_date(value,today=None):
@@ -258,6 +263,21 @@ def ensure_demand_forecast(db,user,params):
                     db.execute("INSERT INTO business_demands VALUES(?,?,?,?,?,?,?,?,?,?,?)",tuple(demand.values()));generated.append(demand);completed.append(demand)
                 day+=timedelta(days=1)
         return completed,"explicit_user_demand" if generated else "existing_with_user_constraints"
+    if params.get("peak_periods"):
+        period_to_code={"morning":"MORNING","afternoon":"NOON","evening":"EVENING"};template_by_code={item["code"]:item for item in rows(db,"SELECT * FROM shift_templates WHERE status='active' AND shift_type<>'rest'")};roles=sorted({item["role"] for item in baseline});generated=[];day=start_date
+        with transaction(db):
+            while day<=end_date:
+                for role in roles:
+                    role_samples=[item for item in baseline if item["role"]==role];base=max(1,round(sum(item["required_count"] for item in role_samples)/len(role_samples)))
+                    for period in params["peak_periods"]:
+                        template=template_by_code.get(period_to_code.get(period));
+                        if not template:continue
+                        multiplier=1.35 if params.get("activity_type") and params["activity_type"]!="日常经营" else 1.15;required=max(1,round(base*multiplier));existing_row=db.execute("SELECT * FROM business_demands WHERE store_id=? AND demand_date=? AND role=? AND start_time=?",(store_id,day.isoformat(),role,template["start_time"])).fetchone()
+                        if existing_row:db.execute("UPDATE business_demands SET end_time=?,required_count=?,confidence=?,factors_json=?,source=? WHERE id=?",(template["end_time"],required,.88,dumps([params.get("activity_type","业务活动"),f"{period} 客流高峰","真实班次模板"]),"agent_peak_forecast",existing_row["id"]));generated.append({**dict(existing_row),"end_time":template["end_time"],"required_count":required})
+                        else:
+                            demand={"id":uid("demand"),"store_id":store_id,"demand_date":day.isoformat(),"start_time":template["start_time"],"end_time":template["end_time"],"role":role,"required_count":required,"confidence":.88,"factors_json":dumps([params.get("activity_type","业务活动"),f"{period} 客流高峰","真实班次模板"]),"source":"agent_peak_forecast","created_at":utcnow()};db.execute("INSERT INTO business_demands VALUES(?,?,?,?,?,?,?,?,?,?,?)",tuple(demand.values()));generated.append(demand)
+                day+=timedelta(days=1)
+        if generated:return generated,"agent_peak_forecast"
     if existing:return existing,"existing"
     patterns={}
     for demand in baseline:
@@ -288,6 +308,8 @@ def create_task(db,user,text,context="auto",trigger_event_id=None):
         mentioned_store=store_mentioned_in_text(db,text);params["store_code"]=mentioned_store["code"] if mentioned_store else None
         if local.get("demand_items"):
             params["demand_items"]=local["demand_items"];params["role"]=local["role"];params["headcount"]=local["headcount"]
+        for key in ("activity_type","peak_periods","overtime_control","night_shift_control"):
+            if local.get(key):params[key]=local[key]
     missing=[]
     if intent["intent"]=="schedule_create":
         if not params.get("start_date") or not params.get("end_date"):missing.append("period")
@@ -380,6 +402,8 @@ def generate_plan(db,task,strategy):
             for key,variable in variables.items():
                 if key[2]==employee_index:by_week.setdefault(schedule_week(demands[key[0]]["demand_date"]),[]).append(int(candidate_meta[key][1]*10)*variable)
             for weighted in by_week.values():model.Add(sum(weighted)<=int(employee["weekly_hour_limit"]*10))
+            night_variables=[variable for key,variable in variables.items() if key[2]==employee_index and demands[key[0]]["end_time"]>="22:00"]
+            if night_variables:model.Add(sum(night_variables)<=int(employee["night_shift_limit"]))
         model.Maximize(sum(candidate_meta[key][3]*variable for key,variable in variables.items()))
         solver=cp_model.CpSolver();solver.parameters.max_time_in_seconds=float(os.getenv("WFM_SOLVER_TIMEOUT_SECONDS","8"));status=solver.Solve(model)
         if status not in (cp_model.OPTIMAL,cp_model.FEASIBLE):raise ApiError("CP-SAT 在当前硬约束下无解",409,"NO_FEASIBLE_SCHEDULE")
@@ -390,6 +414,7 @@ def generate_plan(db,task,strategy):
         solver_name="or-tools-cp-sat"
     else:
         solver_name="heuristic_fallback"
+        night_counts={}
         for demand in demands:
             candidates=[]
             for employee in employees:
@@ -399,6 +424,7 @@ def generate_plan(db,task,strategy):
                 duration=(datetime.fromisoformat(demand["demand_date"]+"T"+demand["end_time"])-datetime.fromisoformat(demand["demand_date"]+"T"+demand["start_time"])).seconds/3600
                 week_key=(employee["id"],schedule_week(demand["demand_date"]))
                 if weekly_hours.get(week_key,0)+duration>employee["weekly_hour_limit"]:continue
+                if demand["end_time"]>="22:00" and night_counts.get(employee["id"],0)>=employee["night_shift_limit"]:continue
                 pref=employee["preferences"].get("ai_summary","");hit=("早班" in pref and int(demand["start_time"][:2])<12) or "班型灵活" in pref
                 fairness=weekly_hours.get(week_key,0);skill=max((x["proficiency"] for x in employee["skills"]),default=1)
                 cost_weight={"balanced":1.2,"experience":.45,"cost":2.0}.get(strategy,1.0)
@@ -406,7 +432,7 @@ def generate_plan(db,task,strategy):
                 score=skill*10-fairness-(employee["hourly_rate"]*cost_weight)+(preference_bonus if hit else 0)
                 candidates.append((score,employee,duration,hit,week_key))
             for score,employee,duration,hit,week_key in sorted(candidates,key=lambda x:x[0],reverse=True)[:demand["required_count"]]:
-                weekly_hours[week_key]=weekly_hours.get(week_key,0)+duration;hours[employee["id"]]=hours.get(employee["id"],0)+duration;preference_hits+=int(hit);assigned.append({"employee_id":employee["id"],"employee_name":employee["name"],"store_id":demand["store_id"],"role":demand["role"],"date":demand["demand_date"],"start_at":f"{demand['demand_date']}T{demand['start_time']}:00+00:00","end_at":f"{demand['demand_date']}T{demand['end_time']}:00+00:00","score":round(score,1),"reason":["技能认证有效",f"所在周工时 {weekly_hours[week_key]:.0f}h","满足偏好" if hit else "覆盖优先"]})
+                weekly_hours[week_key]=weekly_hours.get(week_key,0)+duration;hours[employee["id"]]=hours.get(employee["id"],0)+duration;night_counts[employee["id"]]=night_counts.get(employee["id"],0)+int(demand["end_time"]>="22:00");preference_hits+=int(hit);assigned.append({"employee_id":employee["id"],"employee_name":employee["name"],"store_id":demand["store_id"],"role":demand["role"],"date":demand["demand_date"],"start_at":f"{demand['demand_date']}T{demand['start_time']}:00+00:00","end_at":f"{demand['demand_date']}T{demand['end_time']}:00+00:00","score":round(score,1),"reason":["技能认证有效",f"所在周工时 {weekly_hours[week_key]:.0f}h","满足偏好" if hit else "覆盖优先"]})
     if not assigned:raise ApiError("当前门店没有可满足岗位技能与可用性要求的员工，未生成空方案",409,"NO_ASSIGNABLE_EMPLOYEES")
     cost=sum((datetime.fromisoformat(x["end_at"])-datetime.fromisoformat(x["start_at"])).seconds/3600*next(e["hourly_rate"] for e in employees if e["id"]==x["employee_id"]) for x in assigned)
     coverage=round(len(assigned)/required*100,1) if required else 0
@@ -424,7 +450,7 @@ def run_schedule_task(db,task_id,user):
         required_positions=sum(item["required_count"] for item in demands)
         add_step(db,task_id,3,"需求预测","completed",f"已形成 {len(demands)} 条分时岗位需求，共 {required_positions} 个岗位","engine="+demand_source,{"demand_rows":len(demands),"required_positions":required_positions,"source":demand_source})
         generated=[]
-        for name,strategy in (("均衡最优方案","balanced"),("员工体验优先方案","experience"),("成本优化方案","cost")):
+        for name,strategy in (("覆盖与成本均衡方案","balanced"),("员工体验优先方案","experience")):
             assigned,metrics=generate_plan(db,task,strategy);plan_id=uid("plan")
             generated.append((plan_id,name,strategy,assigned,metrics))
         if not generated or any(item[4]["required"]<=0 for item in generated):raise ApiError("岗位需求为空，禁止创建推荐方案",422,"EMPTY_RECOMMENDATION")
@@ -435,7 +461,7 @@ def run_schedule_task(db,task_id,user):
                 explanation={"facts":[f"覆盖 {metrics['assigned']}/{metrics['required']} 个岗位需求",f"预计人工成本 ¥{metrics['cost']}",f"偏好满足率 {metrics['preference_rate']}%"],"tradeoffs":[tradeoff],"compliance":{"hard_conflicts":0,"rules_checked":6}}
                 db.execute("INSERT INTO schedule_plans VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",(plan_id,task_id,name,strategy,"recommended" if plan_id==recommended[0] else "candidate",1 if plan_id==recommended[0] else 0,dumps(metrics),dumps(explanation),metrics["solver"],utcnow(),None,None))
                 for item in assigned:db.execute("INSERT INTO shifts VALUES(?,?,?,?,?,?,?,?,?,?,?)",(uid("shift"),plan_id,item["employee_id"],item["store_id"],item["role"],item["start_at"],item["end_at"],"draft","optimizer",utcnow(),utcnow()))
-        solver_mode=generated[0][4]["solver"];add_step(db,task_id,4,"三次独立求解","completed","已生成三套差异化排班方案，分别侧重均衡、员工体验和成本",f"solver={solver_mode}",{"plans":3,"solver":solver_mode})
+        solver_mode=generated[0][4]["solver"];add_step(db,task_id,4,"两次独立求解","completed","已生成两套差异化排班方案，分别侧重覆盖成本均衡与员工体验",f"solver={solver_mode}",{"plans":2,"solver":solver_mode})
         add_step(db,task_id,5,"合规风控","completed","硬约束全部通过，软约束已计入评分","hard_rules=3; soft_rules=3",{"rules_checked":6,"hard_conflicts":0})
         add_step(db,task_id,6,"决策评估","completed",f"推荐 {recommended[1]}，等待主管选择生效",f"recommended_plan={recommended[0]}",recommended[4])
         db.execute("UPDATE tasks SET status='completed',progress=100,rag_citations_json=?,completed_at=? WHERE id=?",(dumps([x["id"] for x in sources]),utcnow(),task_id));db.commit()
