@@ -65,6 +65,53 @@
   gap: 0;
 }
 
+.ai-workbench.history-collapsed {
+  grid-template-columns: 54px minmax(0, 1fr) 248px;
+}
+
+.history-toggle {
+  display: none;
+  width: 42px;
+  height: 52px;
+  padding: 5px 0;
+  border: 1px solid #cbd8e8;
+  border-radius: 7px;
+  background: #fff;
+  color: #315782;
+  cursor: pointer;
+  place-items: center;
+}
+
+.history-toggle span {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.history-toggle small {
+  font-size: 10px;
+  color: #64748b;
+}
+
+.history-toggle:hover {
+  border-color: #8db2e6;
+  background: #eef4fc;
+}
+
+.workbench-history .history-toggle {
+  display: grid;
+}
+
+.history-collapsed .workbench-history .workbench-panel-head {
+  padding: 0;
+  border: 0;
+  justify-content: center;
+}
+
+.history-collapsed .workbench-history .workbench-panel-head > :not(.history-toggle),
+.history-collapsed #recentTaskList {
+  display: none;
+}
+
 .workbench-greeting {
   min-height: 166px;
   margin: 0;
@@ -81,6 +128,15 @@
   padding: 22px 28px;
   border-top: 1px solid #dce7f5;
   border-radius: 0 0 10px 10px;
+}
+
+.workbench-composer .command-input {
+  min-height: 200px;
+  resize: vertical;
+}
+
+.workbench-composer .command-actions {
+  min-height: 58px;
 }
 
 .workbench-composer::before {
@@ -149,6 +205,10 @@
     gap: 22px;
   }
 
+  .ai-workbench.history-collapsed {
+    grid-template-columns: 54px minmax(0, 1fr);
+  }
+
   .workbench-rail {
     grid-column: 1 / -1;
     display: grid;
@@ -161,6 +221,15 @@
   .ai-workbench {
     grid-template-columns: 1fr;
     gap: 18px;
+  }
+
+
+  .ai-workbench.history-collapsed {
+    grid-template-columns: 1fr;
+  }
+
+  .history-collapsed .workbench-history {
+    justify-self: start;
   }
 
   .workbench-history { order: 2; }
