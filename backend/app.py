@@ -18,11 +18,11 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).parents[1]))
     from backend.ai import AIClient, rag_answer
     from backend.db import connect, rowdict, utcnow, verify_password
-    from backend.services import ApiError, activate_plan, anomalies, approve_rule, attendance_overview, audit, automation_event, backup_database, business_month_period, confirm_employee_request, create_rule, create_task, decide_employee_request, employee_agent, employee_insights, employee_list, overview, period_review, publish_plan, rule_list, save_employee, schedule_history, schedule_workspace, task_detail, update_anomaly, update_rule
+    from backend.services import ApiError, activate_plan, anomalies, approve_rule, attendance_overview, audit, automation_event, backup_database, business_month_period, confirm_employee_request, confirm_schedule_task, create_rule, create_task, decide_employee_request, employee_agent, employee_insights, employee_list, overview, period_review, publish_plan, rule_list, save_employee, schedule_history, schedule_workspace, task_detail, update_anomaly, update_rule
 else:
     from .ai import AIClient, rag_answer
     from .db import connect, rowdict, utcnow, verify_password
-    from .services import ApiError, activate_plan, anomalies, approve_rule, attendance_overview, audit, automation_event, backup_database, business_month_period, confirm_employee_request, create_rule, create_task, decide_employee_request, employee_agent, employee_insights, employee_list, overview, period_review, publish_plan, rule_list, save_employee, schedule_history, schedule_workspace, task_detail, update_anomaly, update_rule
+    from .services import ApiError, activate_plan, anomalies, approve_rule, attendance_overview, audit, automation_event, backup_database, business_month_period, confirm_employee_request, confirm_schedule_task, create_rule, create_task, decide_employee_request, employee_agent, employee_insights, employee_list, overview, period_review, publish_plan, rule_list, save_employee, schedule_history, schedule_workspace, task_detail, update_anomaly, update_rule
 
 ROOT=Path(__file__).parents[1];PUBLIC=ROOT/"public"
 print(f"[startup] Python {sys.version.split()[0]}，开始初始化 SQLite",flush=True)
@@ -103,6 +103,8 @@ class Handler(BaseHTTPRequestHandler):
             body=self.body();return 202,{"ok":True,"data":create_task(DB,user,body.get("input_text",""),body.get("context","auto"))}
         match=self.match(path,"/api/tasks/{id}")
         if method=="GET" and match:return 200,{"ok":True,"data":task_detail(DB,user,match["id"])}
+        match=self.match(path,"/api/tasks/{id}/confirm")
+        if method=="POST" and match:return 202,{"ok":True,"data":confirm_schedule_task(DB,user,match["id"],self.body())}
         if method=="GET" and path=="/api/schedules/history":
             start,end=business_month_period();return 200,{"ok":True,"data":schedule_history(DB,user,query.get("start",[start])[0],query.get("end",[end])[0])}
         if method=="GET" and path=="/api/schedules/workspace":

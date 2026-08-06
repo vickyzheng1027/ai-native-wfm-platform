@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from backend.ai import AIClient, classify_intent, rag_answer
 from backend.db import connect, migrate, verify_password
-from backend.services import ApiError, activate_plan, anomalies, approve_rule, attendance_overview, automation_event, business_month_period, confirm_employee_request, create_rule, create_task, decide_employee_request, employee_agent, employee_insights, employee_list, normalize_model_date, overview, parse_schedule_parameters, period_review, publish_plan, rule_list, save_employee, schedule_history, schedule_workspace, task_detail, update_anomaly, update_rule
+from backend.services import ApiError, activate_plan, anomalies, approve_rule, attendance_overview, automation_event, business_month_period, confirm_employee_request, confirm_schedule_task, create_rule, create_task, decide_employee_request, employee_agent, employee_insights, employee_list, normalize_model_date, overview, parse_schedule_parameters, period_review, publish_plan, rule_list, save_employee, schedule_history, schedule_workspace, task_detail, update_anomaly, update_rule
 
 
 class FlowStaffTests(unittest.TestCase):
@@ -143,7 +143,7 @@ class FlowStaffTests(unittest.TestCase):
         os.environ.pop("OPENAI_API_KEY")
 
     def test_schedule_task_generates_two_distinct_plans(self):
-        result=create_task(self.db,self.manager,"请安排8月6日至8月8日的排班，覆盖率目标98%","store_management")
+        result=create_task(self.db,self.manager,"静安店请安排8月6日至8月8日的排班，覆盖率目标98%","store_management")
         for _ in range(100):
             task=task_detail(self.db,self.manager,result["task_id"])
             if task["status"] in ("completed","failed"):break
@@ -167,10 +167,21 @@ class FlowStaffTests(unittest.TestCase):
         self.assertEqual(parsed["start_date"],"2026-08-01")
         self.assertEqual(parsed["end_date"],"2026-08-31")
         self.assertEqual(business_month_period(date(2026,8,6)),("2026-08-01","2026-08-31"))
+        self.assertEqual(parse_schedule_parameters("完成本月的排班",date(2026,8,6))["start_date"],"2026-08-01")
+        self.assertEqual(parse_schedule_parameters("完成本月的排班",date(2026,8,6))["end_date"],"2026-08-31")
+
+    def test_schedule_without_store_waits_for_explicit_confirmation(self):
+        with patch("backend.services.business_today",return_value=date(2026,8,6)):
+            result=create_task(self.db,self.manager,"完成本月的排班","store_management")
+        self.assertTrue(result["requires_confirmation"])
+        self.assertEqual(result["missing"],["store"])
+        self.assertEqual(result["parameters"]["start_date"],"2026-08-01")
+        self.assertEqual(result["parameters"]["end_date"],"2026-08-31")
+        self.assertEqual(task_detail(self.db,self.manager,result["task_id"])["status"],"awaiting_confirmation")
 
     def test_month_schedule_spans_weeks_and_only_published_shifts_are_official(self):
         with patch("backend.services.business_today",return_value=date(2026,8,6)):
-            result=create_task(self.db,self.manager,"请完成八月份整月排班，每天需要一名导购、一名收银","store_management")
+            result=create_task(self.db,self.manager,"静安店请完成八月份整月排班，每天需要一名导购、一名收银","store_management")
         for _ in range(150):
             task=task_detail(self.db,self.manager,result["task_id"])
             if task["status"] in ("completed","failed"):break
@@ -192,7 +203,7 @@ class FlowStaffTests(unittest.TestCase):
 
     def test_this_friday_request_generates_shifts_for_resolved_date(self):
         with patch("backend.services.business_today",return_value=date(2026,8,5)):
-            result=create_task(self.db,self.manager,"请安排本周五排班，覆盖率目标95%","store_management")
+            result=create_task(self.db,self.manager,"静安店请安排本周五排班，覆盖率目标95%","store_management")
         for _ in range(100):
             task=task_detail(self.db,self.manager,result["task_id"])
             if task["status"] in ("completed","failed"):break
@@ -208,7 +219,7 @@ class FlowStaffTests(unittest.TestCase):
         self.assertEqual(parsed["role"],"导购")
         self.assertEqual(parsed["headcount"],1)
         with patch("backend.services.business_today",return_value=reference):
-            result=create_task(self.db,self.manager,"本周五只需要一名导购，请生成排班方案","store_management")
+            result=create_task(self.db,self.manager,"静安店本周五只需要一名导购，请生成排班方案","store_management")
         for _ in range(100):
             task=task_detail(self.db,self.manager,result["task_id"])
             if task["status"] in ("completed","failed"):break
@@ -223,7 +234,7 @@ class FlowStaffTests(unittest.TestCase):
             self.assertEqual(plan["shifts"][0]["role"],"导购")
 
     def test_explicit_headcount_overrides_larger_existing_demand(self):
-        result=create_task(self.db,self.manager,"8月8日只需要1名导购排班","store_management")
+        result=create_task(self.db,self.manager,"静安店8月8日只需要1名导购排班","store_management")
         for _ in range(100):
             task=task_detail(self.db,self.manager,result["task_id"])
             if task["status"] in ("completed","failed"):break
@@ -238,7 +249,7 @@ class FlowStaffTests(unittest.TestCase):
         self.assertIsNone(parsed["role"])
         self.assertIsNone(parsed["headcount"])
         with patch("backend.services.business_today",return_value=reference):
-            result=create_task(self.db,self.manager,"本周五要一名导购，一名收银，请生成排班方案","store_management")
+            result=create_task(self.db,self.manager,"静安店本周五要一名导购，一名收银，请生成排班方案","store_management")
         for _ in range(100):
             task=task_detail(self.db,self.manager,result["task_id"])
             if task["status"] in ("completed","failed"):break
@@ -257,7 +268,7 @@ class FlowStaffTests(unittest.TestCase):
         self.assertIsNone(parsed["end_date"])
 
     def test_schedule_task_forecasts_future_demand_instead_of_recommending_empty_plans(self):
-        result=create_task(self.db,self.manager,"请生成8月10日的排班，覆盖率目标95%","store_management")
+        result=create_task(self.db,self.manager,"静安店请生成8月10日的排班，覆盖率目标95%","store_management")
         for _ in range(100):
             task=task_detail(self.db,self.manager,result["task_id"])
             if task["status"] in ("completed","failed"):break
@@ -270,7 +281,7 @@ class FlowStaffTests(unittest.TestCase):
 
     def test_schedule_task_fails_when_no_demand_baseline_exists(self):
         self.db.execute("DELETE FROM business_demands");self.db.commit()
-        result=create_task(self.db,self.manager,"请生成8月10日的排班","store_management")
+        result=create_task(self.db,self.manager,"静安店请生成8月10日的排班","store_management")
         for _ in range(100):
             task=task_detail(self.db,self.manager,result["task_id"])
             if task["status"] in ("completed","failed"):break
@@ -280,7 +291,7 @@ class FlowStaffTests(unittest.TestCase):
         self.assertEqual(task["plans"],[])
 
     def test_schedule_plan_never_assigns_other_store_or_unavailable_employees(self):
-        result=create_task(self.db,self.manager,"请生成8月6日的排班","store_management")
+        result=create_task(self.db,self.manager,"静安店请生成8月6日的排班","store_management")
         for _ in range(100):
             task=task_detail(self.db,self.manager,result["task_id"])
             if task["status"] in ("completed","failed"):break
@@ -293,7 +304,7 @@ class FlowStaffTests(unittest.TestCase):
             self.assertTrue(all((shift["employee_id"],shift["start_at"][:10]) not in unavailable for shift in plan["shifts"]))
 
     def test_legacy_empty_plan_is_invalid_and_cannot_activate(self):
-        result=create_task(self.db,self.manager,"请生成8月6日的排班","store_management")
+        result=create_task(self.db,self.manager,"静安店请生成8月6日的排班","store_management")
         task_id=result["task_id"]
         for _ in range(100):
             task=task_detail(self.db,self.manager,task_id)
@@ -307,7 +318,7 @@ class FlowStaffTests(unittest.TestCase):
             activate_plan(self.db,self.manager,plan_id)
 
     def test_activate_and_publish_are_separate_actions(self):
-        result=create_task(self.db,self.manager,"8月6日至8月8日生成排班","store_management")
+        result=create_task(self.db,self.manager,"静安店8月6日至8月8日生成排班","store_management")
         for _ in range(100):
             task=task_detail(self.db,self.manager,result["task_id"])
             if task["status"]=="completed":break

@@ -99,6 +99,7 @@ def business_month_period(today=None):
 
 def resolve_schedule_period(text,today=None):
     today=today or business_today();current_year=today.year
+    if "本月" in str(text) or "这个月" in str(text) or "当月" in str(text):return business_month_period(today)
     date_matches=re.findall(r"(?:(\d{4})[-年])?(\d{1,2})[-月](\d{1,2})日?",str(text))
     normalized=[f"{int(year or current_year):04d}-{int(month):02d}-{int(day):02d}" for year,month,day in date_matches]
     if normalized:return normalized[0],normalized[-1]
@@ -199,12 +200,19 @@ def apply_explicit_demand_constraints(demands,params):
 
 
 def task_store_id(db,user,params):
-    if user.get("store_id"):return user["store_id"]
     store_code=params.get("store_code")
     if store_code:
         store=db.execute("SELECT id FROM stores WHERE code=? OR name=?",(store_code,store_code)).fetchone()
         if store:return store["id"]
     raise ApiError("未指定门店。请告诉我需要为哪家门店排班，我不会替你猜测门店。",422,"STORE_CONFIRMATION_REQUIRED",{"available_stores":rows(db,"SELECT id,code,name FROM stores ORDER BY name")})
+
+
+def store_mentioned_in_text(db,text):
+    normalized=str(text).replace(" ","")
+    for store in rows(db,"SELECT id,code,name FROM stores ORDER BY name"):
+        aliases={store["code"],store["name"],store["name"].replace("上海","").replace("旗舰店","店").replace("中心店","店")}
+        if any(alias and alias.replace(" ","") in normalized for alias in aliases):return store
+    return None
 
 
 def ensure_demand_forecast(db,user,params):
@@ -256,16 +264,40 @@ def create_task(db,user,text,context="auto",trigger_event_id=None):
     if intent["intent"]=="schedule_create":
         local=parse_schedule_parameters(text);model_start=normalize_model_date(params.get("start_date"));model_end=normalize_model_date(params.get("end_date"))
         params={**local,**{key:value for key,value in params.items() if key not in ("start_date","end_date")},"start_date":model_start or local["start_date"],"end_date":model_end or model_start or local["end_date"]}
+        mentioned_store=store_mentioned_in_text(db,text);params["store_code"]=mentioned_store["code"] if mentioned_store else None
         if local.get("demand_items"):
             params["demand_items"]=local["demand_items"];params["role"]=local["role"];params["headcount"]=local["headcount"]
-    db.execute("INSERT INTO tasks VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(task_id,user["id"],intent["context"],text,intent["intent"],"queued",0,dumps(params),dumps([]),trigger_event_id,1,None,utcnow(),None));db.commit()
+    missing=[]
+    if intent["intent"]=="schedule_create":
+        if not params.get("start_date") or not params.get("end_date"):missing.append("period")
+        if not params.get("store_code"):missing.append("store")
+    task_status="awaiting_confirmation" if missing else "queued"
+    db.execute("INSERT INTO tasks VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(task_id,user["id"],intent["context"],text,intent["intent"],task_status,0,dumps(params),dumps([]),trigger_event_id,1,None,utcnow(),None));db.commit()
     audit(db,user,"task.create","task",task_id,details={"intent":intent["intent"],"mode":intent["mode"]})
     if intent["intent"]=="schedule_create":
-        database_path=db.execute("PRAGMA database_list").fetchone()["file"]
-        if database_path:threading.Thread(target=run_schedule_task_on_connection,args=(database_path,task_id,user),daemon=True).start()
-        else:run_schedule_task(db,task_id,user)
+        if not missing:
+            database_path=db.execute("PRAGMA database_list").fetchone()["file"]
+            if database_path:threading.Thread(target=run_schedule_task_on_connection,args=(database_path,task_id,user),daemon=True).start()
+            else:run_schedule_task(db,task_id,user)
     else:run_non_schedule_task(db,task_id,user,intent)
-    return {"task_id":task_id,"intent":intent,"status":"queued"}
+    return {"task_id":task_id,"intent":intent,"status":task_status,"requires_confirmation":bool(missing),"missing":missing,"parameters":params,"available_stores":rows(db,"SELECT id,code,name FROM stores ORDER BY name") if "store" in missing else []}
+
+
+def confirm_schedule_task(db,user,task_id,body):
+    task=db.execute("SELECT * FROM tasks WHERE id=? AND user_id=?",(task_id,user["id"])).fetchone()
+    if not task:raise ApiError("任务不存在",404,"NOT_FOUND")
+    if task["status"]!="awaiting_confirmation":raise ApiError("当前任务不需要补充确认",409,"TASK_NOT_AWAITING_CONFIRMATION")
+    params=loads(task["parameters_json"],{})
+    for key in ("store_code","start_date","end_date"):
+        if body.get(key):params[key]=body[key]
+    store_id=task_store_id(db,user,params)
+    if not params.get("start_date") or not params.get("end_date"):raise ApiError("请确认排班开始和结束日期",422,"MISSING_SCHEDULE_DATES")
+    params["resolved_store_id"]=store_id
+    db.execute("UPDATE tasks SET status='queued',parameters_json=?,error=NULL WHERE id=?",(dumps(params),task_id));db.commit();audit(db,user,"task.confirm","task",task_id,details={"store_id":store_id,"start_date":params["start_date"],"end_date":params["end_date"]})
+    database_path=db.execute("PRAGMA database_list").fetchone()["file"]
+    if database_path:threading.Thread(target=run_schedule_task_on_connection,args=(database_path,task_id,user),daemon=True).start()
+    else:run_schedule_task(db,task_id,user)
+    return {"task_id":task_id,"status":"queued","parameters":params}
 
 
 def run_schedule_task_on_connection(database_path,task_id,user):
