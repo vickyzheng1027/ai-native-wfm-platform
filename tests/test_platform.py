@@ -347,9 +347,9 @@ class FlowStaffTests(unittest.TestCase):
         first=employee_agent(self.db,self.employee,"我8月8日需要请假处理家庭事务")
         payload=first["data"]["payload"]
         self.assertEqual(payload["leave_date"],"2026-08-08")
-        self.assertEqual(payload["leave_type"],"事假")
+        self.assertEqual(payload["leave_type"],"年假")
         self.assertEqual(payload["start_time"],"09:00")
-        self.assertIn("事假",first["data"]["analysis"]["leave_type_reason"])
+        self.assertIn("年假",first["data"]["analysis"]["leave_type_reason"])
         confirm_employee_request(self.db,self.employee,first["data"]["request_id"])
         with self.assertRaisesRegex(ApiError,"已存在请假申请"):
             employee_agent(self.db,self.employee,"我8月8日还要请假")

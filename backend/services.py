@@ -488,16 +488,26 @@ def parse_leave_request(db,employee_id,text,model_params=None):
         params["leave_date"]=date(int(match.group(1) or today.year),int(match.group(2)),int(match.group(3))).isoformat()
     leave_date=normalize_model_date(params.get("leave_date"),today)
     if not leave_date:raise ApiError("请告诉我具体请假日期",422,"MISSING_LEAVE_DATE")
-    type_reasons=(("病假",("生病","不舒服","就医","医院","病假")),("年假",("年假","休年假")),("调休",("调休","加班换休")),("事假",("事假","家庭","家里","私事","个人事务")))
-    leave_type=params.get("leave_type");matched_reason=None
+    type_reasons=(("病假",("生病","不舒服","就医","医院","病假")),("年假",("年假","休年假")),("调休",("调休","加班换休")),("事假",("事假",)))
+    leave_type=params.get("leave_type");matched_reason=None;explicit_type=False
     for candidate,keywords in type_reasons:
         keyword=next((word for word in keywords if word in text),None)
-        if keyword:leave_type=candidate;matched_reason=keyword;break
-    if leave_type not in ("年假","病假","事假","调休"):leave_type="事假"
+        if keyword:leave_type=candidate;matched_reason=keyword;explicit_type=True;break
+    balances={item["leave_type"]:max(0,float(item["entitled"])-float(item["used"])-float(item["pending"])) for item in rows(db,"SELECT leave_type,entitled,used,pending FROM leave_balances WHERE employee_id=? AND year=?",(employee_id,date.fromisoformat(leave_date).year))}
+    if not explicit_type:
+        if balances.get("年假",0)>0:leave_type="年假"
+        elif balances.get("调休",0)>0:leave_type="调休"
+        elif balances.get("病假",0)>0:leave_type="病假"
+        else:leave_type="事假"
+    if leave_type not in ("年假","病假","事假","调休"):leave_type="年假" if balances.get("年假",0)>0 else "事假"
     shift=db.execute("SELECT start_at,end_at FROM shifts WHERE employee_id=? AND status='published' AND date(start_at)=? ORDER BY start_at LIMIT 1",(employee_id,leave_date)).fetchone()
     start_time=params.get("start_time") or (shift["start_at"][11:16] if shift else "09:00");end_time=params.get("end_time") or (shift["end_at"][11:16] if shift else "18:00")
-    explanation=f"识别到“{matched_reason}”，因此建议使用{leave_type}。" if matched_reason else f"你没有明确假期类型，系统暂按{leave_type}建议；提交前可以修改。"
-    return {"leave_date":leave_date,"leave_type":leave_type,"start_time":start_time,"end_time":end_time,"reason":text},{"facts":[f"请假日期：{leave_date}",f"时间：{start_time} 至 {end_time}","申请尚未改变原班次"],"leave_type_reason":explanation,"suggestion":"确认信息后提交主管审批","model_mode":params.get("mode")}
+    if explicit_type:explanation=f"你明确提出使用{leave_type}，当前可用余额为 {balances.get(leave_type,0):g} 天。"
+    elif leave_type=="年假":explanation=f"你没有指定假期类型；查询到年假仍有 {balances.get('年假',0):g} 天可用，因此优先建议使用年假。"
+    elif leave_type=="事假":explanation="未查询到年假、调休和病假可用额度，因此建议使用事假。"
+    else:explanation=f"年假余额不足，查询到{leave_type}仍有 {balances.get(leave_type,0):g} 天可用，因此建议使用{leave_type}。"
+    balance_facts=[f"{name}可用 {amount:g} 天" for name,amount in balances.items()]
+    return {"leave_date":leave_date,"leave_type":leave_type,"start_time":start_time,"end_time":end_time,"reason":text},{"facts":[f"请假日期：{leave_date}",f"时间：{start_time} 至 {end_time}",*balance_facts,"申请尚未改变原班次"],"leave_type_reason":explanation,"leave_balances":balances,"suggestion":"确认信息后提交主管审批","model_mode":params.get("mode")}
 
 
 def ensure_no_duplicate_leave(db,employee_id,leave_date,exclude_id=None):
