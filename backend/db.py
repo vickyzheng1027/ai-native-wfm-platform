@@ -71,6 +71,7 @@ def migrate(db):
     CREATE TABLE IF NOT EXISTS departments(id TEXT PRIMARY KEY,code TEXT UNIQUE,name TEXT UNIQUE,status TEXT);
     CREATE TABLE IF NOT EXISTS job_positions(id TEXT PRIMARY KEY,code TEXT UNIQUE,name TEXT UNIQUE,department TEXT,status TEXT);
     CREATE TABLE IF NOT EXISTS skill_catalog(id TEXT PRIMARY KEY,code TEXT UNIQUE,name TEXT UNIQUE,category TEXT,status TEXT);
+    CREATE TABLE IF NOT EXISTS shift_templates(id TEXT PRIMARY KEY,code TEXT UNIQUE,name TEXT UNIQUE,start_time TEXT,end_time TEXT,paid_hours REAL,shift_type TEXT,status TEXT,description TEXT,created_at TEXT,updated_at TEXT);
     CREATE TABLE IF NOT EXISTS employees(id TEXT PRIMARY KEY,code TEXT UNIQUE,name TEXT,role TEXT,department TEXT,store_id TEXT,employment_type TEXT,status TEXT,hire_date TEXT,manager_id TEXT,phone TEXT,email TEXT,hourly_rate REAL,weekly_hour_limit REAL,night_shift_limit INTEGER,preferences_json TEXT,FOREIGN KEY(store_id) REFERENCES stores(id));
     CREATE TABLE IF NOT EXISTS employee_skills(id TEXT PRIMARY KEY,employee_id TEXT,skill TEXT,proficiency INTEGER,target_level INTEGER,certified INTEGER,certified_at TEXT,expires_at TEXT,evidence TEXT,FOREIGN KEY(employee_id) REFERENCES employees(id));
     CREATE TABLE IF NOT EXISTS employee_preferences(id TEXT PRIMARY KEY,employee_id TEXT,raw_text TEXT,preference_type TEXT,value_json TEXT,confidence REAL,effective_from TEXT,effective_to TEXT,status TEXT,created_at TEXT,FOREIGN KEY(employee_id) REFERENCES employees(id));
@@ -108,6 +109,7 @@ def migrate(db):
     if not db.execute("SELECT 1 FROM stores LIMIT 1").fetchone():
         seed(db)
     seed_organization_expansion(db)
+    seed_demo_operations(db)
     db.execute("UPDATE meta SET value=? WHERE key='schema_version'",(str(SCHEMA_VERSION),))
     db.commit()
 
@@ -135,6 +137,24 @@ def seed_organization_expansion(db):
     db.executemany("INSERT OR IGNORE INTO employees VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",employees)
     db.executemany("INSERT OR IGNORE INTO employee_skills VALUES(?,?,?,?,?,?,?,?,?)",employee_skills)
     db.executemany("INSERT OR IGNORE INTO leave_balances VALUES(?,?,?,?,?,?,?)",balances)
+
+
+def seed_demo_operations(db):
+    """初始化可读的班次主数据、8月1-6日正式班表及考勤示例，仅在对应数据不存在时写入。"""
+    now=utcnow();templates=[("shift-morning","MORNING","早班","09:00","17:00",8,"day","标准早班"),("shift-noon","NOON","午班","12:00","20:00",8,"day","标准午班"),("shift-evening","EVENING","晚班","14:00","22:00",8,"night","晚间客流班"),("shift-rest","REST","休息班","00:00","00:00",0,"rest","休息日，不计入工时")]
+    db.executemany("INSERT OR IGNORE INTO shift_templates VALUES(?,?,?,?,?,?,?,?,?,?,?)",[(x[0],x[1],x[2],x[3],x[4],x[5],x[6],"active",x[7],now,now) for x in templates])
+    employees=[dict(item) for item in db.execute("SELECT id,store_id,role FROM employees WHERE status='active' ORDER BY code")]
+    if not employees:return
+    if not db.execute("SELECT 1 FROM schedule_plans WHERE id='plan-seed-august-1-6'").fetchone():
+        db.execute("INSERT INTO schedule_plans VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",("plan-seed-august-1-6",None,"8月1日至6日基础班表","seed","published",0,dumps({"coverage":100,"required":len(employees)*6,"assigned":len(employees)*6,"cost":0,"preference_rate":0,"risk_count":0}),dumps({"facts":["系统初始化的基础班表"],"tradeoffs":["用于演示班次、请假和加班数据"],"compliance":{"hard_conflicts":0,"rules_checked":6}}),"seed",now,now,now))
+        for day in range(1,7):
+            for index,employee in enumerate(employees):
+                template=templates[(index+day-1)%3]
+                db.execute("INSERT INTO shifts VALUES(?,?,?,?,?,?,?,?,?,?,?)",(f"shift-seed-{day:02d}-{employee['id']}","plan-seed-august-1-6",employee["id"],employee["store_id"],employee["role"],f"2026-08-{day:02d}T{template[3]}:00+00:00",f"2026-08-{day:02d}T{template[4]}:00+00:00","published","seed",now,now))
+    for index,employee in enumerate(employees[:6]):
+        leave_date=f"2026-08-{index+1:02d}";db.execute("INSERT OR IGNORE INTO attendance VALUES(?,?,?,?,?,?,?,?,?)",(f"att-demo-leave-{employee['id']}",employee["id"],leave_date,"leave",f"{leave_date}T09:00:00+00:00",0,"seeded_leave",dumps({"leave_type":"年假","demo":True}),now))
+    for index,employee in enumerate(employees[6:12]):
+        overtime_date=f"2026-08-{index+1:02d}";db.execute("INSERT OR IGNORE INTO attendance VALUES(?,?,?,?,?,?,?,?,?)",(f"att-demo-overtime-{employee['id']}",employee["id"],overtime_date,"overtime",f"{overtime_date}T20:30:00+00:00",2,"seeded_overtime",dumps({"approved":True,"demo":True}),now))
 
 
 def seed(db):

@@ -31,6 +31,10 @@ class FlowStaffTests(unittest.TestCase):
         self.assertGreaterEqual(self.db.execute("SELECT COUNT(*) n FROM attendance").fetchone()["n"],60)
         self.assertGreaterEqual(self.db.execute("SELECT COUNT(*) n FROM employee_skills").fetchone()["n"],20)
         self.assertEqual(self.db.execute("SELECT COUNT(*) n FROM rules").fetchone()["n"],6)
+        self.assertEqual(self.db.execute("SELECT COUNT(*) n FROM shift_templates").fetchone()["n"],4)
+        self.assertEqual(self.db.execute("SELECT COUNT(*) n FROM shifts WHERE plan_id='plan-seed-august-1-6'").fetchone()["n"],32*6)
+        self.assertGreaterEqual(self.db.execute("SELECT COUNT(*) n FROM attendance WHERE event_type='leave'").fetchone()["n"],6)
+        self.assertGreaterEqual(self.db.execute("SELECT COUNT(*) n FROM attendance WHERE event_type='overtime'").fetchone()["n"],6)
         self.assertEqual(self.db.execute("SELECT COUNT(*) n FROM anomaly_events").fetchone()["n"],3)
 
     def test_login_and_application_shells_respect_hidden_state(self):
@@ -180,6 +184,7 @@ class FlowStaffTests(unittest.TestCase):
         self.assertEqual(task_detail(self.db,self.manager,result["task_id"])["status"],"awaiting_confirmation")
 
     def test_month_schedule_spans_weeks_and_only_published_shifts_are_official(self):
+        official_before=len(schedule_history(self.db,self.manager,"2026-08-01","2026-08-31"))
         with patch("backend.services.business_today",return_value=date(2026,8,6)):
             result=create_task(self.db,self.manager,"静安店请完成八月份整月排班，每天需要一名导购、一名收银","store_management")
         for _ in range(150):
@@ -189,12 +194,12 @@ class FlowStaffTests(unittest.TestCase):
         self.assertEqual(task["status"],"completed",task.get("error"))
         self.assertEqual(len(task["plans"]),3)
         self.assertGreater(len({shift["start_at"][:10] for shift in task["plans"][0]["shifts"]}),3)
-        self.assertEqual(schedule_history(self.db,self.manager,"2026-08-01","2026-08-31"),[])
+        self.assertEqual(len(schedule_history(self.db,self.manager,"2026-08-01","2026-08-31")),official_before)
         workspace=schedule_workspace(self.db,self.manager,"2026-08-01","2026-08-31",task["id"])
         self.assertEqual(len(workspace["plans"]),3)
         chosen=task["plans"][0]["id"]
         activate_plan(self.db,self.manager,chosen);publish_plan(self.db,self.manager,chosen)
-        self.assertGreater(len(schedule_history(self.db,self.manager,"2026-08-01","2026-08-31")),3)
+        self.assertGreater(len(schedule_history(self.db,self.manager,"2026-08-01","2026-08-31")),official_before)
         self.assertGreater(self.db.execute("SELECT COUNT(*) n FROM employee_notifications WHERE resource_id=?",(chosen,)).fetchone()["n"],0)
         employee_workspace=schedule_workspace(self.db,self.employee,"2026-08-01","2026-08-31")
         self.assertEqual(employee_workspace["view_mode"],"self")

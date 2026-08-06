@@ -59,6 +59,22 @@ def employee_list(db,user):
     return result
 
 
+def shift_template_list(db):return rows(db,"SELECT * FROM shift_templates ORDER BY CASE shift_type WHEN 'day' THEN 1 WHEN 'night' THEN 2 ELSE 3 END,start_time")
+
+
+def save_shift_template(db,user,body,template_id=None):
+    if user["role"] not in ("admin","manager","hr"):raise ApiError("无班次维护权限",403,"FORBIDDEN")
+    required=("code","name","start_time","end_time","shift_type")
+    if any(not body.get(key) for key in required):raise ApiError("班次编码、名称、开始时间、结束时间和类型为必填项")
+    template_id=template_id or uid("shift-template");existing=db.execute("SELECT 1 FROM shift_templates WHERE id=?",(template_id,)).fetchone();start=body["start_time"];end=body["end_time"]
+    paid_hours=0 if body["shift_type"]=="rest" else float(body.get("paid_hours",8))
+    values=(body["code"],body["name"],start,end,paid_hours,body["shift_type"],body.get("status","active"),body.get("description",""),utcnow())
+    if existing:db.execute("UPDATE shift_templates SET code=?,name=?,start_time=?,end_time=?,paid_hours=?,shift_type=?,status=?,description=?,updated_at=? WHERE id=?",values+(template_id,))
+    else:db.execute("INSERT INTO shift_templates VALUES(?,?,?,?,?,?,?,?,?,?,?)",(template_id,)+values[:-1]+(values[-1],values[-1]))
+    db.commit();audit(db,user,"shift_template.save","shift_template",template_id,details={"created":not bool(existing)})
+    return rowdict(db.execute("SELECT * FROM shift_templates WHERE id=?",(template_id,)).fetchone())
+
+
 def save_employee(db,user,body,employee_id=None):
     if user["role"] not in ("admin","manager","hr"):raise ApiError("无员工档案维护权限",403,"FORBIDDEN")
     if user["role"]=="manager" and body.get("store_id",user.get("store_id"))!=user.get("store_id"):raise ApiError("只能维护授权门店员工",403,"FORBIDDEN")
