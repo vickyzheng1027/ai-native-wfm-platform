@@ -131,7 +131,11 @@
 }
 
 .workbench-composer .command-input {
-  min-height: 200px;
+  display: block;
+  width: 100%;
+  max-width: none;
+  min-height: 230px;
+  box-sizing: border-box;
   resize: vertical;
 }
 
