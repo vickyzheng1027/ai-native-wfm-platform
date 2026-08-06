@@ -18,11 +18,11 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).parents[1]))
     from backend.ai import AIClient, rag_answer
     from backend.db import connect, rowdict, utcnow, verify_password
-    from backend.services import ApiError, activate_plan, anomalies, approve_rule, attendance_overview, audit, automation_event, backup_database, confirm_employee_request, create_rule, create_task, decide_employee_request, employee_agent, employee_insights, employee_list, overview, period_review, publish_plan, rule_list, save_employee, schedule_history, task_detail, update_anomaly, update_rule
+    from backend.services import ApiError, activate_plan, anomalies, approve_rule, attendance_overview, audit, automation_event, backup_database, business_month_period, confirm_employee_request, create_rule, create_task, decide_employee_request, employee_agent, employee_insights, employee_list, overview, period_review, publish_plan, rule_list, save_employee, schedule_history, task_detail, update_anomaly, update_rule
 else:
     from .ai import AIClient, rag_answer
     from .db import connect, rowdict, utcnow, verify_password
-    from .services import ApiError, activate_plan, anomalies, approve_rule, attendance_overview, audit, automation_event, backup_database, confirm_employee_request, create_rule, create_task, decide_employee_request, employee_agent, employee_insights, employee_list, overview, period_review, publish_plan, rule_list, save_employee, schedule_history, task_detail, update_anomaly, update_rule
+    from .services import ApiError, activate_plan, anomalies, approve_rule, attendance_overview, audit, automation_event, backup_database, business_month_period, confirm_employee_request, create_rule, create_task, decide_employee_request, employee_agent, employee_insights, employee_list, overview, period_review, publish_plan, rule_list, save_employee, schedule_history, task_detail, update_anomaly, update_rule
 
 ROOT=Path(__file__).parents[1];PUBLIC=ROOT/"public"
 print(f"[startup] Python {sys.version.split()[0]}，开始初始化 SQLite",flush=True)
@@ -103,7 +103,8 @@ class Handler(BaseHTTPRequestHandler):
             body=self.body();return 202,{"ok":True,"data":create_task(DB,user,body.get("input_text",""),body.get("context","auto"))}
         match=self.match(path,"/api/tasks/{id}")
         if method=="GET" and match:return 200,{"ok":True,"data":task_detail(DB,user,match["id"])}
-        if method=="GET" and path=="/api/schedules/history":return 200,{"ok":True,"data":schedule_history(DB,user,query.get("start",["2026-08-01"])[0],query.get("end",["2026-08-31"])[0])}
+        if method=="GET" and path=="/api/schedules/history":
+            start,end=business_month_period();return 200,{"ok":True,"data":schedule_history(DB,user,query.get("start",[start])[0],query.get("end",[end])[0])}
         match=self.match(path,"/api/schedules/{id}/activate")
         if method=="POST" and match:return 200,{"ok":True,"data":activate_plan(DB,user,match["id"])}
         match=self.match(path,"/api/schedules/{id}/publish")
@@ -112,7 +113,8 @@ class Handler(BaseHTTPRequestHandler):
         if method=="POST" and path=="/api/organization/employees":return 201,{"ok":True,"data":save_employee(DB,user,self.body())}
         match=self.match(path,"/api/organization/employees/{id}")
         if method=="PUT" and match:return 200,{"ok":True,"data":save_employee(DB,user,self.body(),match["id"])}
-        if method=="GET" and path=="/api/attendance/overview":return 200,{"ok":True,"data":attendance_overview(DB,user,query.get("start",["2026-08-01"])[0],query.get("end",["2026-08-07"])[0])}
+        if method=="GET" and path=="/api/attendance/overview":
+            start,end=business_month_period();return 200,{"ok":True,"data":attendance_overview(DB,user,query.get("start",[start])[0],query.get("end",[end])[0])}
         if method=="GET" and path=="/api/anomalies":return 200,{"ok":True,"data":anomalies(DB,user)}
         match=self.match(path,"/api/anomalies/{id}/status")
         if method=="POST" and match:
@@ -131,7 +133,8 @@ class Handler(BaseHTTPRequestHandler):
         if method=="GET" and path=="/api/insights":return 200,{"ok":True,"data":employee_insights(DB,user)}
         if method=="GET" and path=="/api/reviews/current":return 200,{"ok":True,"data":period_review(DB,user)}
         if method=="POST" and path=="/api/employee/agent":return 200,{"ok":True,"data":employee_agent(DB,user,self.body().get("input_text",""))}
-        if method=="GET" and path=="/api/employee/portal":return 200,{"ok":True,"data":{"profile":employee_list(DB,user)[0] if employee_list(DB,user) else None,"shifts":schedule_history(DB,user,"2026-08-01","2026-08-31"),"requests":[dict(x) for x in DB.execute("SELECT * FROM employee_requests WHERE employee_id=? ORDER BY created_at DESC",(user.get("employee_id"),))] if user.get("employee_id") else []}}
+        if method=="GET" and path=="/api/employee/portal":
+            start,end=business_month_period();return 200,{"ok":True,"data":{"profile":employee_list(DB,user)[0] if employee_list(DB,user) else None,"shifts":schedule_history(DB,user,start,end),"requests":[dict(x) for x in DB.execute("SELECT * FROM employee_requests WHERE employee_id=? ORDER BY created_at DESC",(user.get("employee_id"),))] if user.get("employee_id") else []}}
         if method=="POST" and path=="/api/ai/rag":return 200,{"ok":True,"data":rag_answer(DB,AIClient(DB),user,self.body().get("question",""))}
         if method=="GET" and path=="/api/ai/health":return 200,{"ok":True,"data":{"llm":{"enabled":AIClient(DB).enabled,"model":AIClient(DB).model,"base_url":AIClient(DB).base_url},"rag":{"mode":"live_llm_rag" if AIClient(DB).enabled else "retrieval_only","documents":DB.execute("SELECT COUNT(*) n FROM vector_documents").fetchone()["n"]}}}
         if method=="GET" and path=="/api/automation/events":return 200,{"ok":True,"data":[dict(x) for x in DB.execute("SELECT * FROM automation_events ORDER BY priority DESC,created_at DESC LIMIT 100")]}

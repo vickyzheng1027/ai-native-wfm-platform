@@ -69,7 +69,7 @@ def save_employee(db,user,body,employee_id=None):
     if not db.execute("SELECT 1 FROM stores WHERE id=?",(body["store_id"],)).fetchone():raise ApiError("所选门店不存在")
     invalid_skills=[skill.get("skill") for skill in body.get("skills",[]) if not db.execute("SELECT 1 FROM skill_catalog WHERE name=? AND status='active'",(skill.get("skill"),)).fetchone()]
     if invalid_skills:raise ApiError("包含无效技能："+"、".join(str(skill) for skill in invalid_skills))
-    values=(body["code"],body["name"],body["role"],body["department"],body["store_id"],body.get("employment_type","全职"),body.get("status","active"),body.get("hire_date","2026-01-01"),body.get("manager_id"),body.get("phone",""),body.get("email",""),float(body.get("hourly_rate",0)),float(body.get("weekly_hour_limit",40)),int(body.get("night_shift_limit",2)),dumps(body.get("preferences",{})))
+    values=(body["code"],body["name"],body["role"],body["department"],body["store_id"],body.get("employment_type","全职"),body.get("status","active"),body.get("hire_date",business_today().isoformat()),body.get("manager_id"),body.get("phone",""),body.get("email",""),float(body.get("hourly_rate",0)),float(body.get("weekly_hour_limit",40)),int(body.get("night_shift_limit",2)),dumps(body.get("preferences",{})))
     with transaction(db):
         if existing:db.execute("UPDATE employees SET code=?,name=?,role=?,department=?,store_id=?,employment_type=?,status=?,hire_date=?,manager_id=?,phone=?,email=?,hourly_rate=?,weekly_hour_limit=?,night_shift_limit=?,preferences_json=? WHERE id=?",values+(employee_id,))
         else:db.execute("INSERT INTO employees VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(employee_id,)+values)
@@ -203,7 +203,7 @@ def task_store_id(db,user,params):
     if store_code:
         store=db.execute("SELECT id FROM stores WHERE code=? OR name=?",(store_code,store_code)).fetchone()
         if store:return store["id"]
-    return "store-a"
+    raise ApiError("未指定门店。请告诉我需要为哪家门店排班，我不会替你猜测门店。",422,"STORE_CONFIRMATION_REQUIRED",{"available_stores":rows(db,"SELECT id,code,name FROM stores ORDER BY name")})
 
 
 def ensure_demand_forecast(db,user,params):
