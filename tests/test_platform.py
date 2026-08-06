@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from backend.ai import AIClient, classify_intent, rag_answer
 from backend.db import connect, migrate, verify_password
-from backend.services import ApiError, activate_plan, anomalies, approve_rule, attendance_overview, automation_event, business_month_period, confirm_employee_request, create_rule, create_task, decide_employee_request, employee_agent, employee_insights, employee_list, normalize_model_date, overview, parse_schedule_parameters, period_review, publish_plan, rule_list, save_employee, task_detail, update_anomaly, update_rule
+from backend.services import ApiError, activate_plan, anomalies, approve_rule, attendance_overview, automation_event, business_month_period, confirm_employee_request, create_rule, create_task, decide_employee_request, employee_agent, employee_insights, employee_list, normalize_model_date, overview, parse_schedule_parameters, period_review, publish_plan, rule_list, save_employee, schedule_history, schedule_workspace, task_detail, update_anomaly, update_rule
 
 
 class FlowStaffTests(unittest.TestCase):
@@ -167,6 +167,24 @@ class FlowStaffTests(unittest.TestCase):
         self.assertEqual(parsed["start_date"],"2026-08-01")
         self.assertEqual(parsed["end_date"],"2026-08-31")
         self.assertEqual(business_month_period(date(2026,8,6)),("2026-08-01","2026-08-31"))
+
+    def test_month_schedule_spans_weeks_and_only_published_shifts_are_official(self):
+        with patch("backend.services.business_today",return_value=date(2026,8,6)):
+            result=create_task(self.db,self.manager,"请完成八月份整月排班，每天需要一名导购、一名收银","store_management")
+        for _ in range(150):
+            task=task_detail(self.db,self.manager,result["task_id"])
+            if task["status"] in ("completed","failed"):break
+            time.sleep(.02)
+        self.assertEqual(task["status"],"completed",task.get("error"))
+        self.assertEqual(len(task["plans"]),3)
+        self.assertGreater(len({shift["start_at"][:10] for shift in task["plans"][0]["shifts"]}),3)
+        self.assertEqual(schedule_history(self.db,self.manager,"2026-08-01","2026-08-31"),[])
+        workspace=schedule_workspace(self.db,self.manager,"2026-08-01","2026-08-31",task["id"])
+        self.assertEqual(len(workspace["plans"]),3)
+        chosen=task["plans"][0]["id"]
+        activate_plan(self.db,self.manager,chosen);publish_plan(self.db,self.manager,chosen)
+        self.assertGreater(len(schedule_history(self.db,self.manager,"2026-08-01","2026-08-31")),3)
+        self.assertGreater(self.db.execute("SELECT COUNT(*) n FROM employee_notifications WHERE resource_id=?",(chosen,)).fetchone()["n"],0)
 
     def test_model_relative_date_is_normalized_before_database_query(self):
         self.assertEqual(normalize_model_date("本周五",date(2026,8,5)),"2026-08-07")
