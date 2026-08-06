@@ -468,11 +468,13 @@ def schedule_history(db,user,start,end):
 
 def schedule_workspace(db,user,start,end,task_id=None):
     """返回候选方案工作区；正式历史班表仍只读取 published。"""
+    if user["role"]=="employee":
+        return {"task":None,"plans":[],"published":schedule_history(db,user,start,end),"view_mode":"self"}
     args=[start,end];where="t.intent='schedule_create' AND date(json_extract(t.parameters_json,'$.start_date'))<=date(?) AND date(json_extract(t.parameters_json,'$.end_date'))>=date(?)";args=[end,start]
     if task_id:where+=" AND t.id=?";args.append(task_id)
     task=db.execute(f"SELECT t.* FROM tasks t WHERE {where} ORDER BY t.created_at DESC LIMIT 1",args).fetchone()
-    if not task:return {"task":None,"plans":[],"published":schedule_history(db,user,start,end)}
-    detail=task_detail(db,user,task["id"]);return {"task":detail,"plans":detail["plans"],"published":schedule_history(db,user,start,end)}
+    if not task:return {"task":None,"plans":[],"published":schedule_history(db,user,start,end),"view_mode":"management"}
+    detail=task_detail(db,user,task["id"]);return {"task":detail,"plans":detail["plans"],"published":schedule_history(db,user,start,end),"view_mode":"management"}
 
 
 def employee_agent(db,user,text):

@@ -196,6 +196,10 @@ class FlowStaffTests(unittest.TestCase):
         activate_plan(self.db,self.manager,chosen);publish_plan(self.db,self.manager,chosen)
         self.assertGreater(len(schedule_history(self.db,self.manager,"2026-08-01","2026-08-31")),3)
         self.assertGreater(self.db.execute("SELECT COUNT(*) n FROM employee_notifications WHERE resource_id=?",(chosen,)).fetchone()["n"],0)
+        employee_workspace=schedule_workspace(self.db,self.employee,"2026-08-01","2026-08-31")
+        self.assertEqual(employee_workspace["view_mode"],"self")
+        self.assertEqual(employee_workspace["plans"],[])
+        self.assertTrue(all(shift["employee_id"]==self.employee["employee_id"] for shift in employee_workspace["published"]))
 
     def test_model_relative_date_is_normalized_before_database_query(self):
         self.assertEqual(normalize_model_date("本周五",date(2026,8,5)),"2026-08-07")
