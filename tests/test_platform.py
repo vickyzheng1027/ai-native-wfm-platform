@@ -150,7 +150,7 @@ class FlowStaffTests(unittest.TestCase):
             time.sleep(.02)
         self.assertEqual(task["status"],"completed",task.get("error"))
         self.assertEqual(len(task["steps"]),6)
-        self.assertEqual(len(task["plans"]),2)
+        self.assertEqual(len(task["plans"]),3)
         self.assertEqual(sum(x["recommended"] for x in task["plans"]),1)
         self.assertNotEqual(task["plans"][0]["strategy"],task["plans"][1]["strategy"])
 
@@ -245,7 +245,7 @@ class FlowStaffTests(unittest.TestCase):
             if task["status"] in ("completed","failed"):break
             time.sleep(.02)
         self.assertEqual(task["status"],"completed",task.get("error"))
-        self.assertEqual(len(task["plans"]),2)
+        self.assertEqual(len(task["plans"]),3)
         self.assertTrue(all(plan["metrics"]["required"]>0 for plan in task["plans"]))
         self.assertTrue(all(plan["shifts"] for plan in task["plans"]))
         self.assertGreater(self.db.execute("SELECT COUNT(*) n FROM business_demands WHERE demand_date='2026-08-10'").fetchone()["n"],0)

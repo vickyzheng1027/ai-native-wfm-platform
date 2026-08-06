@@ -41,7 +41,8 @@ def overview(db,user):
     employee_count=db.execute(f"SELECT COUNT(*) n FROM employees{store_clause} AND status='active'" if store_clause else "SELECT COUNT(*) n FROM employees WHERE status='active'",args).fetchone()["n"]
     open_anomalies=db.execute(f"SELECT COUNT(*) n FROM anomaly_events{store_clause} AND status IN ('open','acknowledged','monitoring')" if store_clause else "SELECT COUNT(*) n FROM anomaly_events WHERE status IN ('open','acknowledged','monitoring')",args).fetchone()["n"]
     active_plan=db.execute("SELECT * FROM schedule_plans WHERE status IN ('active','published') ORDER BY COALESCE(published_at,activated_at) DESC LIMIT 1").fetchone()
-    attendance=attendance_overview(db,user,"2026-08-01","2026-08-07")
+    start,end=business_month_period()
+    attendance=attendance_overview(db,user,start,end)
     recent_tasks=rows(db,"SELECT id,input_text,intent,status,progress,created_at FROM tasks WHERE user_id=? ORDER BY created_at DESC LIMIT 5",(user["id"],))
     return {"employee_count":employee_count,"open_anomalies":open_anomalies,"active_rules":db.execute("SELECT COUNT(*) n FROM rules WHERE status='active'").fetchone()["n"],"attendance_rate":attendance["summary"]["attendance_rate"],"active_plan":rowdict(active_plan),"recent_tasks":recent_tasks,"briefings":[{"level":"warning","title":"静安旗舰店周六客流预计上升18%","detail":"当前导购覆盖仍有1人缺口，建议在发布前补齐。"},{"level":"info","title":"2条员工偏好将在下周生效","detail":"排班求解会自动纳入软约束评分。"},{"level":"success","title":"本周合规校验通过率 98.6%","detail":"未发现周工时和最小休息间隔硬冲突。"}]}
 
@@ -339,7 +340,10 @@ def generate_plan(db,task,strategy):
                 duration=(datetime.fromisoformat(demand["demand_date"]+"T"+demand["end_time"])-datetime.fromisoformat(demand["demand_date"]+"T"+demand["start_time"])).seconds/3600
                 if hours.get(employee["id"],0)+duration>employee["weekly_hour_limit"]:continue
                 pref=employee["preferences"].get("ai_summary","");hit=("早班" in pref and int(demand["start_time"][:2])<12) or "班型灵活" in pref
-                fairness=hours.get(employee["id"],0);skill=max((x["proficiency"] for x in employee["skills"]),default=1);score=skill*10-fairness-(employee["hourly_rate"]*(1.2 if strategy=="balanced" else .45))+((25 if strategy=="experience" else 8) if hit else 0)
+                fairness=hours.get(employee["id"],0);skill=max((x["proficiency"] for x in employee["skills"]),default=1)
+                cost_weight={"balanced":1.2,"experience":.45,"cost":2.0}.get(strategy,1.0)
+                preference_bonus=25 if strategy=="experience" else (8 if strategy=="balanced" else 2)
+                score=skill*10-fairness-(employee["hourly_rate"]*cost_weight)+(preference_bonus if hit else 0)
                 candidates.append((score,employee,duration,hit))
             for score,employee,duration,hit in sorted(candidates,key=lambda x:x[0],reverse=True)[:demand["required_count"]]:
                 hours[employee["id"]]=hours.get(employee["id"],0)+duration;preference_hits+=int(hit);assigned.append({"employee_id":employee["id"],"employee_name":employee["name"],"store_id":demand["store_id"],"role":demand["role"],"date":demand["demand_date"],"start_at":f"{demand['demand_date']}T{demand['start_time']}:00+00:00","end_at":f"{demand['demand_date']}T{demand['end_time']}:00+00:00","score":round(score,1),"reason":["技能认证有效",f"排后周工时 {hours[employee['id']]:.0f}h","满足偏好" if hit else "覆盖优先"]})
@@ -360,17 +364,18 @@ def run_schedule_task(db,task_id,user):
         required_positions=sum(item["required_count"] for item in demands)
         add_step(db,task_id,3,"需求预测","completed",f"已形成 {len(demands)} 条分时岗位需求，共 {required_positions} 个岗位","engine="+demand_source,{"demand_rows":len(demands),"required_positions":required_positions,"source":demand_source})
         generated=[]
-        for name,strategy in (("均衡方案","balanced"),("员工体验优先方案","experience")):
+        for name,strategy in (("均衡最优方案","balanced"),("员工体验优先方案","experience"),("成本优化方案","cost")):
             assigned,metrics=generate_plan(db,task,strategy);plan_id=uid("plan")
             generated.append((plan_id,name,strategy,assigned,metrics))
         if not generated or any(item[4]["required"]<=0 for item in generated):raise ApiError("岗位需求为空，禁止创建推荐方案",422,"EMPTY_RECOMMENDATION")
         recommended=max(generated,key=lambda x:x[4]["coverage"]*2+x[4]["preference_rate"]*.35-x[4]["cost"]*.002)
         with transaction(db):
             for plan_id,name,strategy,assigned,metrics in generated:
-                explanation={"facts":[f"覆盖 {metrics['assigned']}/{metrics['required']} 个岗位需求",f"预计人工成本 ¥{metrics['cost']}",f"偏好满足率 {metrics['preference_rate']}%"],"tradeoffs":["均衡成本与公平性" if strategy=="balanced" else "提高偏好权重并降低夜班风险"],"compliance":{"hard_conflicts":0,"rules_checked":6}}
+                tradeoff={"balanced":"在覆盖、成本和公平性之间取得平衡","experience":"优先满足员工偏好并降低疲劳风险","cost":"优先降低预计人工成本，同时保持岗位覆盖"}[strategy]
+                explanation={"facts":[f"覆盖 {metrics['assigned']}/{metrics['required']} 个岗位需求",f"预计人工成本 ¥{metrics['cost']}",f"偏好满足率 {metrics['preference_rate']}%"],"tradeoffs":[tradeoff],"compliance":{"hard_conflicts":0,"rules_checked":6}}
                 db.execute("INSERT INTO schedule_plans VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",(plan_id,task_id,name,strategy,"recommended" if plan_id==recommended[0] else "candidate",1 if plan_id==recommended[0] else 0,dumps(metrics),dumps(explanation),metrics["solver"],utcnow(),None,None))
                 for item in assigned:db.execute("INSERT INTO shifts VALUES(?,?,?,?,?,?,?,?,?,?,?)",(uid("shift"),plan_id,item["employee_id"],item["store_id"],item["role"],item["start_at"],item["end_at"],"draft","optimizer",utcnow(),utcnow()))
-        solver_mode=generated[0][4]["solver"];add_step(db,task_id,4,"两次独立求解","completed","已生成均衡与员工体验两套独立方案",f"solver={solver_mode}",{"plans":2,"solver":solver_mode})
+        solver_mode=generated[0][4]["solver"];add_step(db,task_id,4,"三次独立求解","completed","已生成三套差异化排班方案，分别侧重均衡、员工体验和成本",f"solver={solver_mode}",{"plans":3,"solver":solver_mode})
         add_step(db,task_id,5,"合规风控","completed","硬约束全部通过，软约束已计入评分","hard_rules=3; soft_rules=3",{"rules_checked":6,"hard_conflicts":0})
         add_step(db,task_id,6,"决策评估","completed",f"推荐 {recommended[1]}，等待主管选择生效",f"recommended_plan={recommended[0]}",recommended[4])
         db.execute("UPDATE tasks SET status='completed',progress=100,rag_citations_json=?,completed_at=? WHERE id=?",(dumps([x["id"] for x in sources]),utcnow(),task_id));db.commit()
@@ -430,7 +435,7 @@ def employee_agent(db,user,text):
         db.execute("INSERT INTO employee_requests VALUES(?,?,?,?,?,?,?,?,?,?,?)",(request_id,employee_id,intent["intent"].replace("_request",""),None,text,dumps(intent.get("parameters",{})),dumps(analysis),"pending_confirmation",None,utcnow(),None));db.commit();audit(db,user,"employee_request.draft","employee_request",request_id)
         return {"intent":intent,"answer":"我已理解你的申请，请确认内容后再提交给主管。","data":{"request_id":request_id,"status":"pending_confirmation","analysis":analysis,"needs_confirmation":True}}
     if intent["intent"]=="preference_update":
-        pref_id=uid("pref");db.execute("INSERT INTO employee_preferences VALUES(?,?,?,?,?,?,?,?,?,?)",(pref_id,employee_id,text,"ai_natural_language",dumps(intent.get("parameters",{})),intent["confidence"],"2026-08-05",None,"active",utcnow()));db.execute("UPDATE employees SET preferences_json=? WHERE id=?",(dumps({"ai_summary":intent["summary"],"raw_text":text}),employee_id));db.commit();audit(db,user,"preference.update","employee",employee_id)
+        pref_id=uid("pref");db.execute("INSERT INTO employee_preferences VALUES(?,?,?,?,?,?,?,?,?,?)",(pref_id,employee_id,text,"ai_natural_language",dumps(intent.get("parameters",{})),intent["confidence"],business_today().isoformat(),None,"active",utcnow()));db.execute("UPDATE employees SET preferences_json=? WHERE id=?",(dumps({"ai_summary":intent["summary"],"raw_text":text}),employee_id));db.commit();audit(db,user,"preference.update","employee",employee_id)
         return {"intent":intent,"answer":"偏好已保存为软约束，将参与后续排班，但不承诺一定满足。","data":{"preference_id":pref_id}}
     return {"intent":intent,**rag_answer(db,client,user,text)}
 
@@ -575,8 +580,8 @@ def employee_insights(db,user):
 
 def period_review(db,user):
     if user["role"]=="employee":raise ApiError("无组织复盘权限",403,"FORBIDDEN")
-    published=db.execute("SELECT COUNT(*) n FROM shifts WHERE status='published'").fetchone()["n"];attendance=attendance_overview(db,user,"2026-08-01","2026-08-07")["summary"];open_count=len([x for x in anomalies(db,user) if x["status"] not in ("resolved","dismissed")])
-    return {"period":"2026-08-01 至 2026-08-07","metrics":{"forecast_mape":8.7,"coverage_rate":96.4,"attendance_rate":attendance["attendance_rate"],"published_shifts":published,"open_anomalies":open_count,"temporary_adjustments":2},"root_causes":["周末商圈活动使导购需求高于基线","高熟练销售人员集中导致公平性压力"],"improvements":[{"action":"将周末商圈活动因子权重上调 6%","risk":"low","status":"recorded"},{"action":"提高技能覆盖公平性权重","risk":"medium","status":"pending_final_review"}]}
+    published=db.execute("SELECT COUNT(*) n FROM shifts WHERE status='published'").fetchone()["n"];start,end=business_month_period();attendance=attendance_overview(db,user,start,end)["summary"];open_count=len([x for x in anomalies(db,user) if x["status"] not in ("resolved","dismissed")])
+    return {"period":f"{start} 至 {end}","metrics":{"forecast_mape":8.7,"coverage_rate":96.4,"attendance_rate":attendance["attendance_rate"],"published_shifts":published,"open_anomalies":open_count,"temporary_adjustments":2},"root_causes":["历史客流与岗位需求存在波动","技能覆盖和工时公平性需要持续优化"],"improvements":[{"action":"根据最新客流数据更新需求预测因子","risk":"low","status":"recorded"},{"action":"提高技能覆盖公平性权重","risk":"medium","status":"pending_final_review"}]}
 
 
 def process_event(db,event_id,user):
