@@ -6,7 +6,7 @@ import shutil
 import sqlite3
 import threading
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -92,11 +92,23 @@ def business_today():
     return datetime.now(ZoneInfo(os.getenv("WFM_TIMEZONE","Asia/Shanghai"))).date()
 
 
+def business_month_period(today=None):
+    today=today or business_today();start=date(today.year,today.month,1);end=date(today.year+1,1,1)-timedelta(days=1) if today.month==12 else date(today.year,today.month+1,1)-timedelta(days=1);return start.isoformat(),end.isoformat()
+
+
 def resolve_schedule_period(text,today=None):
     today=today or business_today();current_year=today.year
     date_matches=re.findall(r"(?:(\d{4})[-年])?(\d{1,2})[-月](\d{1,2})日?",str(text))
     normalized=[f"{int(year or current_year):04d}-{int(month):02d}-{int(day):02d}" for year,month,day in date_matches]
     if normalized:return normalized[0],normalized[-1]
+    month_match=re.search(r"(?:(\d{4})年)?(\d{1,2}|[一二三四五六七八九十]+)月(?:份)?",str(text))
+    if month_match:
+        month_raw=month_match.group(2);digits={"一":1,"二":2,"三":3,"四":4,"五":5,"六":6,"七":7,"八":8,"九":9,"十":10}
+        month=digits.get(month_raw,int(month_raw) if month_raw.isdigit() else None)
+        year=int(month_match.group(1) or current_year)
+        if month and 1<=month<=12:
+            first=date(year,month,1);last=date(year+1,1,1)-timedelta(days=1) if month==12 else date(year,month+1,1)-timedelta(days=1)
+            return first.isoformat(),last.isoformat()
     if "今天" in text:return today.isoformat(),today.isoformat()
     if "后天" in text:
         target=today+timedelta(days=2);return target.isoformat(),target.isoformat()
@@ -412,7 +424,7 @@ def employee_agent(db,user,text):
     if not user.get("employee_id"):raise ApiError("当前账号未关联员工档案",403,"NO_EMPLOYEE_PROFILE")
     client=AIClient(db);intent=classify_intent(client,user,text,"my_affairs");employee_id=user["employee_id"]
     if intent["intent"]=="schedule_query":
-        return {"intent":intent,"answer":"已查询你的已发布班表。","data":{"shifts":schedule_history(db,user,"2026-08-01","2026-08-31")}}
+        month_start,month_end=business_month_period();return {"intent":intent,"answer":"已查询本月你的已发布班表。","data":{"shifts":schedule_history(db,user,month_start,month_end)}}
     if intent["intent"] in ("leave_request","swap_request","adjust_request"):
         request_id=uid("request");analysis={"facts":["申请尚未改变原班次"],"suggestion":"等待主管审批与覆盖校验","model_mode":intent["mode"]}
         db.execute("INSERT INTO employee_requests VALUES(?,?,?,?,?,?,?,?,?,?,?)",(request_id,employee_id,intent["intent"].replace("_request",""),None,text,dumps(intent.get("parameters",{})),dumps(analysis),"pending_confirmation",None,utcnow(),None));db.commit();audit(db,user,"employee_request.draft","employee_request",request_id)

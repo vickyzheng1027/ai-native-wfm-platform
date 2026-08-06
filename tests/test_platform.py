@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from backend.ai import AIClient, classify_intent, rag_answer
 from backend.db import connect, migrate, verify_password
-from backend.services import ApiError, activate_plan, anomalies, approve_rule, attendance_overview, automation_event, confirm_employee_request, create_rule, create_task, decide_employee_request, employee_agent, employee_insights, employee_list, normalize_model_date, overview, parse_schedule_parameters, period_review, publish_plan, rule_list, save_employee, task_detail, update_anomaly, update_rule
+from backend.services import ApiError, activate_plan, anomalies, approve_rule, attendance_overview, automation_event, business_month_period, confirm_employee_request, create_rule, create_task, decide_employee_request, employee_agent, employee_insights, employee_list, normalize_model_date, overview, parse_schedule_parameters, period_review, publish_plan, rule_list, save_employee, task_detail, update_anomaly, update_rule
 
 
 class FlowStaffTests(unittest.TestCase):
@@ -161,6 +161,12 @@ class FlowStaffTests(unittest.TestCase):
         self.assertEqual(parse_schedule_parameters("安排下周五",reference)["start_date"],"2026-08-14")
         self.assertEqual(parse_schedule_parameters("安排本周末",reference)["start_date"],"2026-08-08")
         self.assertEqual(parse_schedule_parameters("安排本周末",reference)["end_date"],"2026-08-09")
+
+    def test_month_input_resolves_to_full_calendar_month(self):
+        parsed=parse_schedule_parameters("请完成八月份整月排班",date(2026,7,20))
+        self.assertEqual(parsed["start_date"],"2026-08-01")
+        self.assertEqual(parsed["end_date"],"2026-08-31")
+        self.assertEqual(business_month_period(date(2026,8,6)),("2026-08-01","2026-08-31"))
 
     def test_model_relative_date_is_normalized_before_database_query(self):
         self.assertEqual(normalize_model_date("本周五",date(2026,8,5)),"2026-08-07")
