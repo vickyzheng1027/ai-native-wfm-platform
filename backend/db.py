@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def utcnow():
@@ -78,7 +78,8 @@ def migrate(db):
     CREATE TABLE IF NOT EXISTS attendance(id TEXT PRIMARY KEY,employee_id TEXT,event_date TEXT,event_type TEXT,event_time TEXT,hours REAL,source TEXT,metadata_json TEXT,created_at TEXT);
     CREATE TABLE IF NOT EXISTS leave_balances(id TEXT PRIMARY KEY,employee_id TEXT,year INTEGER,leave_type TEXT,entitled REAL,used REAL,pending REAL);
     CREATE TABLE IF NOT EXISTS employee_requests(id TEXT PRIMARY KEY,employee_id TEXT,request_type TEXT,shift_id TEXT,reason TEXT,payload_json TEXT,agent_analysis_json TEXT,status TEXT,peer_employee_id TEXT,created_at TEXT,decided_at TEXT);
-    CREATE TABLE IF NOT EXISTS rules(id TEXT PRIMARY KEY,name TEXT,description TEXT,scope TEXT,strength TEXT,domain TEXT,definition_json TEXT,status TEXT,version INTEGER,source TEXT,confidence REAL,created_by TEXT,approved_by TEXT,created_at TEXT,updated_at TEXT);
+    CREATE TABLE IF NOT EXISTS rules(id TEXT PRIMARY KEY,name TEXT,description TEXT,scope TEXT,strength TEXT,domain TEXT,definition_json TEXT,status TEXT,version INTEGER,source TEXT,confidence REAL,created_by TEXT,approved_by TEXT,created_at TEXT,updated_at TEXT,store_id TEXT);
+    CREATE TABLE IF NOT EXISTS rule_versions(id TEXT PRIMARY KEY,rule_id TEXT,version INTEGER,snapshot_json TEXT,changed_by TEXT,changed_at TEXT);
     CREATE TABLE IF NOT EXISTS business_demands(id TEXT PRIMARY KEY,store_id TEXT,demand_date TEXT,start_time TEXT,end_time TEXT,role TEXT,required_count INTEGER,confidence REAL,factors_json TEXT,source TEXT,created_at TEXT);
     CREATE TABLE IF NOT EXISTS tasks(id TEXT PRIMARY KEY,user_id TEXT,context TEXT,input_text TEXT,intent TEXT,status TEXT,progress INTEGER,parameters_json TEXT,rag_citations_json TEXT,trigger_event_id TEXT,approval_required INTEGER,error TEXT,created_at TEXT,completed_at TEXT);
     CREATE TABLE IF NOT EXISTS task_steps(id TEXT PRIMARY KEY,task_id TEXT,stage INTEGER,name TEXT,status TEXT,business_message TEXT,technical_message TEXT,metrics_json TEXT,created_at TEXT);
@@ -92,6 +93,9 @@ def migrate(db):
     CREATE TABLE IF NOT EXISTS audit_logs(id TEXT PRIMARY KEY,occurred_at TEXT,user_id TEXT,action TEXT,resource_type TEXT,resource_id TEXT,result TEXT,ip TEXT,request_id TEXT,details_json TEXT);
     CREATE TABLE IF NOT EXISTS backups(id TEXT PRIMARY KEY,path TEXT,size_bytes INTEGER,checksum TEXT,status TEXT,created_by TEXT,created_at TEXT);
     """)
+    rule_columns={column["name"] for column in db.execute("PRAGMA table_info(rules)")}
+    if "store_id" not in rule_columns:db.execute("ALTER TABLE rules ADD COLUMN store_id TEXT")
+    db.execute("UPDATE rules SET store_id='store-a' WHERE scope='store' AND store_id IS NULL")
     current = db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
     if not current:
         db.execute("INSERT INTO meta VALUES('schema_version',?)", (str(SCHEMA_VERSION),))
@@ -165,7 +169,7 @@ def seed(db):
         ("rule-5","高峰技能覆盖","高峰每班至少一名高熟练员工","store","soft","skills",{"min_proficiency":4,"min_count":1},"active",1,"manual",1.0),
         ("rule-6","连续夜班提醒","连续两次夜班触发疲劳提醒","company","notice","fatigue",{"night_streak":2},"active",1,"manual",1.0),
     ]
-    db.executemany("INSERT INTO rules VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",[(x[0],x[1],x[2],x[3],x[4],x[5],dumps(x[6]),x[7],x[8],x[9],x[10],"user-admin","user-hr",now,now) for x in rules])
+    db.executemany("INSERT INTO rules VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",[(x[0],x[1],x[2],x[3],x[4],x[5],dumps(x[6]),x[7],x[8],x[9],x[10],"user-admin","user-hr",now,now,"store-a" if x[3]=="store" else None) for x in rules])
     start=datetime(2026,8,1,tzinfo=timezone.utc)
     attendance=[]
     states=["normal","normal","late","normal","overtime","leave","normal","absence"]

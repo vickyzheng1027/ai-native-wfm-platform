@@ -446,7 +446,7 @@ def update_anomaly(db,user,anomaly_id,status,note):
 
 def rule_list(db):
     result=[]
-    for rule in rows(db,"SELECT * FROM rules ORDER BY status='active' DESC,updated_at DESC"):
+    for rule in rows(db,"SELECT r.*,s.name store_name,s.code store_code FROM rules r LEFT JOIN stores s ON s.id=r.store_id ORDER BY r.status='active' DESC,r.updated_at DESC"):
         rule["definition"]=loads(rule.pop("definition_json"),{});result.append(rule)
     return result
 
@@ -458,9 +458,35 @@ def create_rule(db,user,body,client):
     schema={"type":"object","additionalProperties":False,"properties":{"name":{"type":"string"},"description":{"type":"string"},"scope":{"type":"string","enum":["company","store","temporary"]},"strength":{"type":"string","enum":["hard","soft","notice"]},"domain":{"type":"string","enum":["schedule","hours","leave","fatigue","coverage","skills"]},"definition":{"type":"object","additionalProperties":False,"properties":{"field":{"type":["string","null"]},"operator":{"type":["string","null"]},"value":{"type":["number","boolean","string","null"]},"unit":{"type":["string","null"]},"schedule_scope":{"type":["string","null"]}},"required":["field","operator","value","unit","schedule_scope"]},"confidence":{"type":"number"},"conflicts":{"type":"array","items":{"type":"string"}}},"required":["name","description","scope","strength","domain","definition","confidence","conflicts"]}
     if client.enabled:parsed=client.structured(user["id"],"rule_parse","将自然语言 WFM 规则转换为可审批结构。不得虚构数值。",text,schema);mode="live_llm"
     else:parsed={"name":text[:24],"description":text,"scope":"store" if user["role"]=="manager" else "company","strength":"soft","domain":"schedule","definition":{"raw":text},"confidence":.45,"conflicts":[]};mode="deterministic_fallback"
+    store_id=(body.get("store_id") or user.get("store_id")) if parsed["scope"]=="store" else None
+    if parsed["scope"]=="store":
+        if not store_id or not db.execute("SELECT 1 FROM stores WHERE id=?",(store_id,)).fetchone():raise ApiError("门店级规则必须选择有效的适用门店")
+        if user["role"]=="manager" and store_id!=user.get("store_id"):raise ApiError("只能创建授权门店规则",403,"FORBIDDEN")
     status="pending_approval" if parsed["scope"]=="company" or parsed["strength"]=="hard" else "active"
-    rule_id=uid("rule");db.execute("INSERT INTO rules VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(rule_id,parsed["name"],parsed["description"],parsed["scope"],parsed["strength"],parsed["domain"],dumps(parsed["definition"]),status,1,"ai_parsed",parsed["confidence"],user["id"],None,utcnow(),utcnow()));db.commit();audit(db,user,"rule.create","rule",rule_id,details={"mode":mode,"conflicts":parsed["conflicts"]})
+    rule_id=uid("rule");db.execute("INSERT INTO rules VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(rule_id,parsed["name"],parsed["description"],parsed["scope"],parsed["strength"],parsed["domain"],dumps(parsed["definition"]),status,1,"ai_parsed",parsed["confidence"],user["id"],None,utcnow(),utcnow(),store_id));db.commit();audit(db,user,"rule.create","rule",rule_id,details={"mode":mode,"conflicts":parsed["conflicts"],"store_id":store_id})
     return {"rule":next(x for x in rule_list(db) if x["id"]==rule_id),"analysis":parsed,"mode":mode,"impact":{"employees":db.execute("SELECT COUNT(*) n FROM employees WHERE status='active'").fetchone()["n"],"shifts":db.execute("SELECT COUNT(*) n FROM shifts WHERE status='published'").fetchone()["n"]}}
+
+
+def update_rule(db,user,rule_id,body):
+    if user["role"] not in ("admin","manager","hr"):raise ApiError("无规则修改权限",403,"FORBIDDEN")
+    current=rowdict(db.execute("SELECT * FROM rules WHERE id=?",(rule_id,)).fetchone())
+    if not current:raise ApiError("规则不存在",404,"NOT_FOUND")
+    if user["role"]=="manager" and (current["scope"]!="store" or current.get("store_id")!=user.get("store_id")):raise ApiError("只能修改授权门店规则",403,"FORBIDDEN")
+    name=str(body.get("name","")).strip();description=str(body.get("description","")).strip();scope=body.get("scope");strength=body.get("strength");domain=body.get("domain");store_id=body.get("store_id") if scope=="store" else None
+    if not name or not description:raise ApiError("规则名称和说明不能为空")
+    if scope not in ("company","store","temporary"):raise ApiError("规则范围无效")
+    if strength not in ("hard","soft","notice"):raise ApiError("规则强度无效")
+    if domain not in ("schedule","hours","leave","fatigue","coverage","skills"):raise ApiError("业务域无效")
+    if scope=="store":
+        if not store_id or not db.execute("SELECT 1 FROM stores WHERE id=?",(store_id,)).fetchone():raise ApiError("门店级规则必须选择适用门店")
+        if user["role"]=="manager" and store_id!=user.get("store_id"):raise ApiError("只能修改授权门店规则",403,"FORBIDDEN")
+    if user["role"]=="manager" and (scope!="store" or strength=="hard"):raise ApiError("门店主管只能维护本门店的软约束或提示规则",403,"FORBIDDEN")
+    status="pending_approval" if scope=="company" or strength=="hard" else "active";new_version=current["version"]+1;now=utcnow()
+    with transaction(db):
+        db.execute("INSERT INTO rule_versions VALUES(?,?,?,?,?,?)",(uid("rule-version"),rule_id,current["version"],dumps(current),user["id"],now))
+        db.execute("UPDATE rules SET name=?,description=?,scope=?,strength=?,domain=?,status=?,version=?,approved_by=NULL,updated_at=?,store_id=? WHERE id=?",(name,description,scope,strength,domain,status,new_version,now,store_id,rule_id))
+    audit(db,user,"rule.update","rule",rule_id,details={"from_version":current["version"],"to_version":new_version,"store_id":store_id})
+    return next(x for x in rule_list(db) if x["id"]==rule_id)
 
 
 def automation_event(db,user,body):

@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from backend.ai import AIClient, classify_intent, rag_answer
 from backend.db import connect, migrate, verify_password
-from backend.services import ApiError, activate_plan, anomalies, approve_rule, attendance_overview, automation_event, create_rule, create_task, decide_employee_request, employee_agent, employee_insights, employee_list, normalize_model_date, overview, parse_schedule_parameters, period_review, publish_plan, save_employee, task_detail, update_anomaly
+from backend.services import ApiError, activate_plan, anomalies, approve_rule, attendance_overview, automation_event, create_rule, create_task, decide_employee_request, employee_agent, employee_insights, employee_list, normalize_model_date, overview, parse_schedule_parameters, period_review, publish_plan, rule_list, save_employee, task_detail, update_anomaly, update_rule
 
 
 class FlowStaffTests(unittest.TestCase):
@@ -331,6 +331,39 @@ class FlowStaffTests(unittest.TestCase):
         approved=approve_rule(self.db,self.hr_user(),result["rule"]["id"])
         self.assertEqual(approved["status"],"active")
         self.assertEqual(approved["version"],before+1)
+
+    def test_store_rule_returns_applicable_store(self):
+        rule=next(item for item in rule_list(self.db) if item["id"]=="rule-5")
+        self.assertEqual(rule["store_id"],"store-a")
+        self.assertEqual(rule["store_name"],"上海静安旗舰店")
+
+    def test_rule_update_persists_new_version_and_snapshot(self):
+        before=next(item for item in rule_list(self.db) if item["id"]=="rule-5")
+        updated=update_rule(self.db,self.manager,"rule-5",{"name":"高峰技能覆盖（优化）","description":"晚高峰至少安排一名高熟练员工","scope":"store","store_id":"store-a","strength":"soft","domain":"skills"})
+        self.assertEqual(updated["name"],"高峰技能覆盖（优化）")
+        self.assertEqual(updated["version"],before["version"]+1)
+        snapshot=self.db.execute("SELECT * FROM rule_versions WHERE rule_id='rule-5'").fetchone()
+        self.assertIsNotNone(snapshot)
+        self.assertEqual(snapshot["version"],before["version"])
+
+    def test_company_or_hard_rule_update_requires_approval(self):
+        updated=update_rule(self.db,self.admin,"rule-5",{"name":"全公司技能覆盖","description":"所有门店必须满足岗位技能覆盖","scope":"company","store_id":None,"strength":"hard","domain":"skills"})
+        self.assertEqual(updated["status"],"pending_approval")
+        self.assertIsNone(updated["store_id"])
+
+    def test_manager_cannot_update_another_store_rule(self):
+        self.db.execute("UPDATE rules SET store_id='store-b' WHERE id='rule-5'");self.db.commit()
+        with self.assertRaisesRegex(ApiError,"授权门店"):
+            update_rule(self.db,self.manager,"rule-5",{"name":"越权修改","description":"不应保存","scope":"store","store_id":"store-b","strength":"soft","domain":"skills"})
+
+    def test_rule_page_localizes_enums_and_calls_real_update_api(self):
+        script=(Path(__file__).parents[1]/"public"/"app.js").read_text(encoding="utf-8")
+        self.assertIn("notice:'提示规则'",script)
+        self.assertIn("hours:'工时管理'",script)
+        self.assertIn("fatigue:'疲劳风险'",script)
+        self.assertIn('data-edit-rule="${r.id}"',script)
+        self.assertIn("method:'PUT'",script)
+        self.assertIn("`/api/rules/${rule.id}`",script)
 
     def test_manager_can_decide_employee_request_in_own_store(self):
         created=employee_agent(self.db,self.employee,"我8月8日需要请假")
