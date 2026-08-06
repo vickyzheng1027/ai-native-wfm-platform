@@ -86,7 +86,12 @@ def attendance_overview(db,user,start,end):
     data=rows(db,f"SELECT * FROM attendance WHERE event_date BETWEEN ? AND ? AND employee_id IN ({','.join('?' for _ in ids)}) ORDER BY event_date" if ids else "SELECT * FROM attendance WHERE 0",(start,end,*ids) if ids else ())
     normal=sum(x["event_type"] in ("normal","late") for x in data);expected=sum(x["event_type"] not in ("leave","overtime") for x in data);exceptions=sum(x["event_type"] in ("late","absence") for x in data)
     balances=rows(db,f"SELECT * FROM leave_balances WHERE employee_id IN ({','.join('?' for _ in ids)}) ORDER BY employee_id,leave_type" if ids else "SELECT * FROM leave_balances WHERE 0",ids)
-    return {"employees":[{"id":x["id"],"name":x["name"],"code":x["code"],"role":x["role"]} for x in employees],"records":data,"balances":balances,"summary":{"attendance_rate":round(normal/expected*100,1) if expected else 0,"exceptions":exceptions,"leave_records":sum(x["event_type"]=="leave" for x in data),"overtime_hours":sum(x["hours"] or 0 for x in data if x["event_type"]=="overtime")}}
+    approvals=[]
+    if user["role"] in ("admin","manager","hr"):
+        sql="SELECT r.*,e.name employee_name,e.code employee_code,e.store_id FROM employee_requests r JOIN employees e ON e.id=r.employee_id WHERE r.status='pending_manager'";args=[]
+        if user["role"]=="manager":sql+=" AND e.store_id=?";args.append(user.get("store_id"))
+        approvals=[{**item,"payload":loads(item.pop("payload_json"),{}),"analysis":loads(item.pop("agent_analysis_json"),{})} for item in rows(db,sql+" ORDER BY r.created_at",args)]
+    return {"employees":[{"id":x["id"],"name":x["name"],"code":x["code"],"role":x["role"]} for x in employees],"records":data,"balances":balances,"approval_requests":approvals,"summary":{"attendance_rate":round(normal/expected*100,1) if expected else 0,"exceptions":exceptions,"leave_records":sum(x["event_type"]=="leave" for x in data),"overtime_hours":sum(x["hours"] or 0 for x in data if x["event_type"]=="overtime")}}
 
 
 def business_today():
@@ -477,27 +482,55 @@ def schedule_workspace(db,user,start,end,task_id=None):
     detail=task_detail(db,user,task["id"]);return {"task":detail,"plans":detail["plans"],"published":schedule_history(db,user,start,end),"view_mode":"management"}
 
 
+def parse_leave_request(db,employee_id,text,model_params=None):
+    params=dict(model_params or {});today=business_today();match=re.search(r"(?:(\d{4})[年./-])?(\d{1,2})[月./-](\d{1,2})日?号?",text)
+    if match:
+        params["leave_date"]=date(int(match.group(1) or today.year),int(match.group(2)),int(match.group(3))).isoformat()
+    leave_date=normalize_model_date(params.get("leave_date"),today)
+    if not leave_date:raise ApiError("请告诉我具体请假日期",422,"MISSING_LEAVE_DATE")
+    type_reasons=(("病假",("生病","不舒服","就医","医院","病假")),("年假",("年假","休年假")),("调休",("调休","加班换休")),("事假",("事假","家庭","家里","私事","个人事务")))
+    leave_type=params.get("leave_type");matched_reason=None
+    for candidate,keywords in type_reasons:
+        keyword=next((word for word in keywords if word in text),None)
+        if keyword:leave_type=candidate;matched_reason=keyword;break
+    if leave_type not in ("年假","病假","事假","调休"):leave_type="事假"
+    shift=db.execute("SELECT start_at,end_at FROM shifts WHERE employee_id=? AND status='published' AND date(start_at)=? ORDER BY start_at LIMIT 1",(employee_id,leave_date)).fetchone()
+    start_time=params.get("start_time") or (shift["start_at"][11:16] if shift else "09:00");end_time=params.get("end_time") or (shift["end_at"][11:16] if shift else "18:00")
+    explanation=f"识别到“{matched_reason}”，因此建议使用{leave_type}。" if matched_reason else f"你没有明确假期类型，系统暂按{leave_type}建议；提交前可以修改。"
+    return {"leave_date":leave_date,"leave_type":leave_type,"start_time":start_time,"end_time":end_time,"reason":text},{"facts":[f"请假日期：{leave_date}",f"时间：{start_time} 至 {end_time}","申请尚未改变原班次"],"leave_type_reason":explanation,"suggestion":"确认信息后提交主管审批","model_mode":params.get("mode")}
+
+
+def ensure_no_duplicate_leave(db,employee_id,leave_date,exclude_id=None):
+    sql="SELECT id,status FROM employee_requests WHERE employee_id=? AND request_type='leave' AND json_extract(payload_json,'$.leave_date')=? AND status NOT IN ('rejected')";args=[employee_id,leave_date]
+    if exclude_id:sql+=" AND id<>?";args.append(exclude_id)
+    duplicate=db.execute(sql,args).fetchone()
+    if duplicate:raise ApiError(f"{leave_date} 已存在请假申请，请勿重复提交",409,"DUPLICATE_LEAVE_REQUEST",{"request_id":duplicate["id"],"status":duplicate["status"]})
+
+
 def employee_agent(db,user,text):
     if not user.get("employee_id"):raise ApiError("当前账号未关联员工档案",403,"NO_EMPLOYEE_PROFILE")
     client=AIClient(db);intent=classify_intent(client,user,text,"my_affairs");employee_id=user["employee_id"]
     if intent["intent"]=="schedule_query":
         month_start,month_end=business_month_period();return {"intent":intent,"answer":"已查询本月你的已发布班表。","data":{"shifts":schedule_history(db,user,month_start,month_end)}}
     if intent["intent"] in ("leave_request","swap_request","adjust_request"):
-        request_id=uid("request");analysis={"facts":["申请尚未改变原班次"],"suggestion":"等待主管审批与覆盖校验","model_mode":intent["mode"]}
-        db.execute("INSERT INTO employee_requests VALUES(?,?,?,?,?,?,?,?,?,?,?)",(request_id,employee_id,intent["intent"].replace("_request",""),None,text,dumps(intent.get("parameters",{})),dumps(analysis),"pending_confirmation",None,utcnow(),None));db.commit();audit(db,user,"employee_request.draft","employee_request",request_id)
-        return {"intent":intent,"answer":"我已理解你的申请，请确认内容后再提交给主管。","data":{"request_id":request_id,"status":"pending_confirmation","analysis":analysis,"needs_confirmation":True}}
+        request_id=uid("request");payload=intent.get("parameters",{});analysis={"facts":["申请尚未改变原班次"],"suggestion":"等待主管审批与覆盖校验","model_mode":intent["mode"]}
+        if intent["intent"]=="leave_request":payload,analysis=parse_leave_request(db,employee_id,text,{**payload,"mode":intent["mode"]});ensure_no_duplicate_leave(db,employee_id,payload["leave_date"])
+        db.execute("INSERT INTO employee_requests VALUES(?,?,?,?,?,?,?,?,?,?,?)",(request_id,employee_id,intent["intent"].replace("_request",""),None,text,dumps(payload),dumps(analysis),"pending_confirmation",None,utcnow(),None));db.commit();audit(db,user,"employee_request.draft","employee_request",request_id)
+        return {"intent":intent,"answer":"我已理解你的申请，请核对日期、假期类型和时间后再提交。","data":{"request_id":request_id,"status":"pending_confirmation","payload":payload,"analysis":analysis,"needs_confirmation":True}}
     if intent["intent"]=="preference_update":
         pref_id=uid("pref");db.execute("INSERT INTO employee_preferences VALUES(?,?,?,?,?,?,?,?,?,?)",(pref_id,employee_id,text,"ai_natural_language",dumps(intent.get("parameters",{})),intent["confidence"],business_today().isoformat(),None,"active",utcnow()));db.execute("UPDATE employees SET preferences_json=? WHERE id=?",(dumps({"ai_summary":intent["summary"],"raw_text":text}),employee_id));db.commit();audit(db,user,"preference.update","employee",employee_id)
         return {"intent":intent,"answer":"偏好已保存为软约束，将参与后续排班，但不承诺一定满足。","data":{"preference_id":pref_id}}
     return {"intent":intent,**rag_answer(db,client,user,text)}
 
 
-def confirm_employee_request(db,user,request_id):
+def confirm_employee_request(db,user,request_id,updates=None):
     if not user.get("employee_id"):raise ApiError("当前账号未关联员工档案",403,"NO_EMPLOYEE_PROFILE")
     request=db.execute("SELECT * FROM employee_requests WHERE id=? AND employee_id=?",(request_id,user["employee_id"])).fetchone()
     if not request:raise ApiError("申请不存在或无权操作",404,"NOT_FOUND")
     if request["status"]!="pending_confirmation":raise ApiError("该申请不在待确认状态",409,"INVALID_REQUEST_STATUS")
-    db.execute("UPDATE employee_requests SET status=? WHERE id=?",("pending_manager",request_id));db.commit();audit(db,user,"employee_request.confirm","employee_request",request_id)
+    payload=loads(request["payload_json"],{});payload.update({key:value for key,value in (updates or {}).items() if key in ("leave_date","leave_type","start_time","end_time") and value})
+    if request["request_type"]=="leave":ensure_no_duplicate_leave(db,user["employee_id"],payload.get("leave_date"),request_id)
+    db.execute("UPDATE employee_requests SET status=?,payload_json=? WHERE id=?",("pending_manager",dumps(payload),request_id));db.commit();audit(db,user,"employee_request.confirm","employee_request",request_id)
     return {**rowdict(db.execute("SELECT * FROM employee_requests WHERE id=?",(request_id,)).fetchone()),"status":"pending_manager"}
 
 

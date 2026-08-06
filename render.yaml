@@ -6,6 +6,10 @@ services:
     buildCommand: pip install -r backend/requirements.txt && python -m unittest discover -s tests -v
     startCommand: python -u backend/app.py
     healthCheckPath: /healthz
+    disk:
+      name: flowstaff-data
+      mountPath: /var/data
+      sizeGB: 1
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.8
@@ -24,6 +28,6 @@ services:
       - key: WFM_AUTOMATION_ENABLED
         value: true
       - key: DATABASE_PATH
-        value: /tmp/ai-native-wfm-platform/flowstaff.db
+        value: /var/data/flowstaff.db
       - key: OPENAI_API_KEY
         sync: false

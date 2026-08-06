@@ -133,7 +133,7 @@ class Handler(BaseHTTPRequestHandler):
         if method=="POST" and match:
             body=self.body();return 200,{"ok":True,"data":decide_employee_request(DB,user,match["id"],body.get("status",""),body.get("note",""))}
         match=self.match(path,"/api/employee/requests/{id}/confirm")
-        if method=="POST" and match:return 200,{"ok":True,"data":confirm_employee_request(DB,user,match["id"])}
+        if method=="POST" and match:return 200,{"ok":True,"data":confirm_employee_request(DB,user,match["id"],self.body())}
         if method=="GET" and path=="/api/insights":return 200,{"ok":True,"data":employee_insights(DB,user)}
         if method=="GET" and path=="/api/reviews/current":return 200,{"ok":True,"data":period_review(DB,user)}
         if method=="POST" and path=="/api/employee/agent":return 200,{"ok":True,"data":employee_agent(DB,user,self.body().get("input_text",""))}

@@ -343,6 +343,17 @@ class FlowStaffTests(unittest.TestCase):
         self.assertEqual(confirmed["status"],"pending_manager")
         self.assertEqual(self.db.execute("SELECT COUNT(*) n FROM shifts").fetchone()["n"],before)
 
+    def test_leave_confirmation_contains_explanation_and_duplicate_date_is_blocked(self):
+        first=employee_agent(self.db,self.employee,"我8月8日需要请假处理家庭事务")
+        payload=first["data"]["payload"]
+        self.assertEqual(payload["leave_date"],"2026-08-08")
+        self.assertEqual(payload["leave_type"],"事假")
+        self.assertEqual(payload["start_time"],"09:00")
+        self.assertIn("事假",first["data"]["analysis"]["leave_type_reason"])
+        confirm_employee_request(self.db,self.employee,first["data"]["request_id"])
+        with self.assertRaisesRegex(ApiError,"已存在请假申请"):
+            employee_agent(self.db,self.employee,"我8月8日还要请假")
+
     def test_employee_preference_is_persisted_as_soft_constraint(self):
         result=employee_agent(self.db,self.employee,"我希望以后尽量排早班，周三不要排班")
         self.assertIn("软约束",result["answer"])
