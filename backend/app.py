@@ -18,11 +18,11 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).parents[1]))
     from backend.ai import AIClient, rag_answer
     from backend.db import connect, rowdict, utcnow, verify_password
-    from backend.services import ApiError, activate_plan, anomalies, approve_rule, attendance_overview, audit, automation_event, backup_database, business_month_period, confirm_employee_request, create_rule, create_task, decide_employee_request, employee_agent, employee_insights, employee_list, overview, period_review, publish_plan, rule_list, save_employee, schedule_history, task_detail, update_anomaly, update_rule
+    from backend.services import ApiError, activate_plan, anomalies, approve_rule, attendance_overview, audit, automation_event, backup_database, business_month_period, confirm_employee_request, create_rule, create_task, decide_employee_request, employee_agent, employee_insights, employee_list, overview, period_review, publish_plan, rule_list, save_employee, schedule_history, schedule_workspace, task_detail, update_anomaly, update_rule
 else:
     from .ai import AIClient, rag_answer
     from .db import connect, rowdict, utcnow, verify_password
-    from .services import ApiError, activate_plan, anomalies, approve_rule, attendance_overview, audit, automation_event, backup_database, business_month_period, confirm_employee_request, create_rule, create_task, decide_employee_request, employee_agent, employee_insights, employee_list, overview, period_review, publish_plan, rule_list, save_employee, schedule_history, task_detail, update_anomaly, update_rule
+    from .services import ApiError, activate_plan, anomalies, approve_rule, attendance_overview, audit, automation_event, backup_database, business_month_period, confirm_employee_request, create_rule, create_task, decide_employee_request, employee_agent, employee_insights, employee_list, overview, period_review, publish_plan, rule_list, save_employee, schedule_history, schedule_workspace, task_detail, update_anomaly, update_rule
 
 ROOT=Path(__file__).parents[1];PUBLIC=ROOT/"public"
 print(f"[startup] Python {sys.version.split()[0]}，开始初始化 SQLite",flush=True)
@@ -105,6 +105,8 @@ class Handler(BaseHTTPRequestHandler):
         if method=="GET" and match:return 200,{"ok":True,"data":task_detail(DB,user,match["id"])}
         if method=="GET" and path=="/api/schedules/history":
             start,end=business_month_period();return 200,{"ok":True,"data":schedule_history(DB,user,query.get("start",[start])[0],query.get("end",[end])[0])}
+        if method=="GET" and path=="/api/schedules/workspace":
+            start,end=business_month_period();return 200,{"ok":True,"data":schedule_workspace(DB,user,query.get("start",[start])[0],query.get("end",[end])[0],query.get("task_id",[None])[0])}
         match=self.match(path,"/api/schedules/{id}/activate")
         if method=="POST" and match:return 200,{"ok":True,"data":activate_plan(DB,user,match["id"])}
         match=self.match(path,"/api/schedules/{id}/publish")
@@ -134,7 +136,7 @@ class Handler(BaseHTTPRequestHandler):
         if method=="GET" and path=="/api/reviews/current":return 200,{"ok":True,"data":period_review(DB,user)}
         if method=="POST" and path=="/api/employee/agent":return 200,{"ok":True,"data":employee_agent(DB,user,self.body().get("input_text",""))}
         if method=="GET" and path=="/api/employee/portal":
-            start,end=business_month_period();return 200,{"ok":True,"data":{"profile":employee_list(DB,user)[0] if employee_list(DB,user) else None,"shifts":schedule_history(DB,user,start,end),"requests":[dict(x) for x in DB.execute("SELECT * FROM employee_requests WHERE employee_id=? ORDER BY created_at DESC",(user.get("employee_id"),))] if user.get("employee_id") else []}}
+            start,end=business_month_period();employee_id=user.get("employee_id");return 200,{"ok":True,"data":{"profile":employee_list(DB,user)[0] if employee_list(DB,user) else None,"shifts":schedule_history(DB,user,start,end),"requests":[dict(x) for x in DB.execute("SELECT * FROM employee_requests WHERE employee_id=? ORDER BY created_at DESC",(employee_id,))] if employee_id else [],"notifications":[dict(x) for x in DB.execute("SELECT * FROM employee_notifications WHERE employee_id=? ORDER BY created_at DESC LIMIT 20",(employee_id,))] if employee_id else []}}
         if method=="POST" and path=="/api/ai/rag":return 200,{"ok":True,"data":rag_answer(DB,AIClient(DB),user,self.body().get("question",""))}
         if method=="GET" and path=="/api/ai/health":return 200,{"ok":True,"data":{"llm":{"enabled":AIClient(DB).enabled,"model":AIClient(DB).model,"base_url":AIClient(DB).base_url},"rag":{"mode":"live_llm_rag" if AIClient(DB).enabled else "retrieval_only","documents":DB.execute("SELECT COUNT(*) n FROM vector_documents").fetchone()["n"]}}}
         if method=="GET" and path=="/api/automation/events":return 200,{"ok":True,"data":[dict(x) for x in DB.execute("SELECT * FROM automation_events ORDER BY priority DESC,created_at DESC LIMIT 100")]}

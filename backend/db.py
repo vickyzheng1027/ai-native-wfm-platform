@@ -86,6 +86,7 @@ def migrate(db):
     CREATE TABLE IF NOT EXISTS task_steps(id TEXT PRIMARY KEY,task_id TEXT,stage INTEGER,name TEXT,status TEXT,business_message TEXT,technical_message TEXT,metrics_json TEXT,created_at TEXT);
     CREATE TABLE IF NOT EXISTS schedule_plans(id TEXT PRIMARY KEY,task_id TEXT,name TEXT,strategy TEXT,status TEXT,recommended INTEGER,metrics_json TEXT,explanation_json TEXT,solver TEXT,created_at TEXT,activated_at TEXT,published_at TEXT);
     CREATE TABLE IF NOT EXISTS shifts(id TEXT PRIMARY KEY,plan_id TEXT,employee_id TEXT,store_id TEXT,role TEXT,start_at TEXT,end_at TEXT,status TEXT,source TEXT,created_at TEXT,updated_at TEXT);
+    CREATE TABLE IF NOT EXISTS employee_notifications(id TEXT PRIMARY KEY,employee_id TEXT,notification_type TEXT,title TEXT,content TEXT,resource_id TEXT,status TEXT,created_at TEXT,read_at TEXT);
     CREATE TABLE IF NOT EXISTS anomaly_events(id TEXT PRIMARY KEY,employee_id TEXT,store_id TEXT,anomaly_type TEXT,risk_level TEXT,confidence REAL,evidence_json TEXT,impact TEXT,possible_causes_json TEXT,suggestions_json TEXT,status TEXT,created_at TEXT,updated_at TEXT);
     CREATE TABLE IF NOT EXISTS anomaly_actions(id TEXT PRIMARY KEY,anomaly_id TEXT,from_status TEXT,to_status TEXT,note TEXT,actor_id TEXT,created_at TEXT);
     CREATE TABLE IF NOT EXISTS vector_documents(id TEXT PRIMARY KEY,source_type TEXT,source_id TEXT,title TEXT,content TEXT,embedding_json TEXT,embedding_model TEXT,content_hash TEXT,metadata_json TEXT,updated_at TEXT);

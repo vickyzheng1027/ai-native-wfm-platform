@@ -289,15 +289,21 @@ def employee_matches_role(employee,skills,role):
     return any(x["skill"]==target and x["certified"] for x in skills)
 
 
+def schedule_week(value):
+    day=datetime.fromisoformat(value).date();year,week,_=day.isocalendar();return f"{year}-W{week:02d}"
+
+
 def generate_plan(db,task,strategy):
-    params=loads(task["parameters_json"],{});store_id=params.get("resolved_store_id","store-a");demands=apply_explicit_demand_constraints(rows(db,"SELECT * FROM business_demands WHERE store_id=? AND demand_date BETWEEN ? AND ? ORDER BY demand_date,start_time",(store_id,params.get("start_date"),params.get("end_date"))),params)
+    params=loads(task["parameters_json"],{});store_id=params.get("resolved_store_id")
+    if not store_id:raise ApiError("排班任务尚未确认门店",422,"STORE_CONFIRMATION_REQUIRED")
+    demands=apply_explicit_demand_constraints(rows(db,"SELECT * FROM business_demands WHERE store_id=? AND demand_date BETWEEN ? AND ? ORDER BY demand_date,start_time",(store_id,params.get("start_date"),params.get("end_date"))),params)
     if not demands:raise ApiError("没有可执行的岗位需求，禁止生成空排班方案",422,"EMPTY_SCHEDULE_DEMAND")
     employees=[employee for employee in employee_list(db,{"role":"admin","store_id":None}) if employee["store_id"]==store_id and employee["status"]=="active"]
     unavailable={(item["employee_id"],item["event_date"]) for item in rows(db,"SELECT employee_id,event_date FROM attendance WHERE event_date BETWEEN ? AND ? AND event_type IN ('leave','absence')",(params.get("start_date"),params.get("end_date")))}
     for request in rows(db,"SELECT employee_id,payload_json FROM employee_requests WHERE request_type='leave' AND status='approved'"):
         payload=loads(request["payload_json"],{});leave_date=payload.get("leave_date") or payload.get("start_date")
         if leave_date:unavailable.add((request["employee_id"],leave_date))
-    assigned=[];hours={};preference_hits=0;required=sum(x["required_count"] for x in demands)
+    assigned=[];hours={};weekly_hours={};preference_hits=0;required=sum(x["required_count"] for x in demands)
     if cp_model and demands:
         model=cp_model.CpModel();variables={};candidate_meta={}
         for demand_index,demand in enumerate(demands):
@@ -317,17 +323,17 @@ def generate_plan(db,task,strategy):
             for (demand_index,slot,index),variable in variables.items():
                 if index==employee_index:by_date.setdefault(demands[demand_index]["demand_date"],[]).append(variable)
             for day_vars in by_date.values():model.Add(sum(day_vars)<=1)
-            weighted=[]
+            by_week={}
             for key,variable in variables.items():
-                if key[2]==employee_index:weighted.append(int(candidate_meta[key][1]*10)*variable)
-            if weighted:model.Add(sum(weighted)<=int(employee["weekly_hour_limit"]*10))
+                if key[2]==employee_index:by_week.setdefault(schedule_week(demands[key[0]]["demand_date"]),[]).append(int(candidate_meta[key][1]*10)*variable)
+            for weighted in by_week.values():model.Add(sum(weighted)<=int(employee["weekly_hour_limit"]*10))
         model.Maximize(sum(candidate_meta[key][3]*variable for key,variable in variables.items()))
         solver=cp_model.CpSolver();solver.parameters.max_time_in_seconds=float(os.getenv("WFM_SOLVER_TIMEOUT_SECONDS","8"));status=solver.Solve(model)
         if status not in (cp_model.OPTIMAL,cp_model.FEASIBLE):raise ApiError("CP-SAT 在当前硬约束下无解",409,"NO_FEASIBLE_SCHEDULE")
         for key,variable in variables.items():
             if not solver.Value(variable):continue
-            demand=demands[key[0]];employee,duration,hit,score=candidate_meta[key];hours[employee["id"]]=hours.get(employee["id"],0)+duration;preference_hits+=int(hit)
-            assigned.append({"employee_id":employee["id"],"employee_name":employee["name"],"store_id":demand["store_id"],"role":demand["role"],"date":demand["demand_date"],"start_at":f"{demand['demand_date']}T{demand['start_time']}:00+00:00","end_at":f"{demand['demand_date']}T{demand['end_time']}:00+00:00","score":score,"reason":["CP-SAT 硬约束通过",f"排后周工时 {hours[employee['id']]:.0f}h","满足偏好" if hit else "覆盖优先"]})
+            demand=demands[key[0]];employee,duration,hit,score=candidate_meta[key];week_key=(employee["id"],schedule_week(demand["demand_date"]));weekly_hours[week_key]=weekly_hours.get(week_key,0)+duration;hours[employee["id"]]=hours.get(employee["id"],0)+duration;preference_hits+=int(hit)
+            assigned.append({"employee_id":employee["id"],"employee_name":employee["name"],"store_id":demand["store_id"],"role":demand["role"],"date":demand["demand_date"],"start_at":f"{demand['demand_date']}T{demand['start_time']}:00+00:00","end_at":f"{demand['demand_date']}T{demand['end_time']}:00+00:00","score":score,"reason":["CP-SAT 硬约束通过",f"所在周工时 {weekly_hours[week_key]:.0f}h","满足偏好" if hit else "覆盖优先"]})
         solver_name="or-tools-cp-sat"
     else:
         solver_name="heuristic_fallback"
@@ -338,15 +344,16 @@ def generate_plan(db,task,strategy):
                 if not employee_matches_role(employee,employee["skills"],demand["role"]):continue
                 if any(x["employee_id"]==employee["id"] and x["date"]==demand["demand_date"] for x in assigned):continue
                 duration=(datetime.fromisoformat(demand["demand_date"]+"T"+demand["end_time"])-datetime.fromisoformat(demand["demand_date"]+"T"+demand["start_time"])).seconds/3600
-                if hours.get(employee["id"],0)+duration>employee["weekly_hour_limit"]:continue
+                week_key=(employee["id"],schedule_week(demand["demand_date"]))
+                if weekly_hours.get(week_key,0)+duration>employee["weekly_hour_limit"]:continue
                 pref=employee["preferences"].get("ai_summary","");hit=("早班" in pref and int(demand["start_time"][:2])<12) or "班型灵活" in pref
-                fairness=hours.get(employee["id"],0);skill=max((x["proficiency"] for x in employee["skills"]),default=1)
+                fairness=weekly_hours.get(week_key,0);skill=max((x["proficiency"] for x in employee["skills"]),default=1)
                 cost_weight={"balanced":1.2,"experience":.45,"cost":2.0}.get(strategy,1.0)
                 preference_bonus=25 if strategy=="experience" else (8 if strategy=="balanced" else 2)
                 score=skill*10-fairness-(employee["hourly_rate"]*cost_weight)+(preference_bonus if hit else 0)
-                candidates.append((score,employee,duration,hit))
-            for score,employee,duration,hit in sorted(candidates,key=lambda x:x[0],reverse=True)[:demand["required_count"]]:
-                hours[employee["id"]]=hours.get(employee["id"],0)+duration;preference_hits+=int(hit);assigned.append({"employee_id":employee["id"],"employee_name":employee["name"],"store_id":demand["store_id"],"role":demand["role"],"date":demand["demand_date"],"start_at":f"{demand['demand_date']}T{demand['start_time']}:00+00:00","end_at":f"{demand['demand_date']}T{demand['end_time']}:00+00:00","score":round(score,1),"reason":["技能认证有效",f"排后周工时 {hours[employee['id']]:.0f}h","满足偏好" if hit else "覆盖优先"]})
+                candidates.append((score,employee,duration,hit,week_key))
+            for score,employee,duration,hit,week_key in sorted(candidates,key=lambda x:x[0],reverse=True)[:demand["required_count"]]:
+                weekly_hours[week_key]=weekly_hours.get(week_key,0)+duration;hours[employee["id"]]=hours.get(employee["id"],0)+duration;preference_hits+=int(hit);assigned.append({"employee_id":employee["id"],"employee_name":employee["name"],"store_id":demand["store_id"],"role":demand["role"],"date":demand["demand_date"],"start_at":f"{demand['demand_date']}T{demand['start_time']}:00+00:00","end_at":f"{demand['demand_date']}T{demand['end_time']}:00+00:00","score":round(score,1),"reason":["技能认证有效",f"所在周工时 {weekly_hours[week_key]:.0f}h","满足偏好" if hit else "覆盖优先"]})
     if not assigned:raise ApiError("当前门店没有可满足岗位技能与可用性要求的员工，未生成空方案",409,"NO_ASSIGNABLE_EMPLOYEES")
     cost=sum((datetime.fromisoformat(x["end_at"])-datetime.fromisoformat(x["start_at"])).seconds/3600*next(e["hourly_rate"] for e in employees if e["id"]==x["employee_id"]) for x in assigned)
     coverage=round(len(assigned)/required*100,1) if required else 0
@@ -414,15 +421,26 @@ def publish_plan(db,user,plan_id):
     if db.execute("SELECT COUNT(*) n FROM shifts WHERE plan_id=?",(plan_id,)).fetchone()["n"]<=0:raise ApiError("空方案不能发布，请重新生成排班方案",409,"EMPTY_PLAN_NOT_PUBLISHABLE")
     with transaction(db):
         db.execute("UPDATE schedule_plans SET status='published',published_at=? WHERE id=?",(utcnow(),plan_id));db.execute("UPDATE shifts SET status='published',updated_at=? WHERE plan_id=?",(utcnow(),plan_id))
+        for employee in rows(db,"SELECT DISTINCT employee_id FROM shifts WHERE plan_id=?",(plan_id,)):
+            db.execute("INSERT INTO employee_notifications VALUES(?,?,?,?,?,?,?,?,?)",(uid("notice"),employee["employee_id"],"schedule_published","新的排班已发布",f"你的排班方案“{plan['name']}”已发布，请查看班表。",plan_id,"unread",utcnow(),None))
     audit(db,user,"schedule.publish","schedule_plan",plan_id,details={"compliance_rechecked":True})
     return task_detail(db,user,plan["task_id"])
 
 
 def schedule_history(db,user,start,end):
-    sql="SELECT sh.*,e.name employee_name,e.code employee_code,p.name plan_name,p.status plan_status FROM shifts sh JOIN employees e ON e.id=sh.employee_id JOIN schedule_plans p ON p.id=sh.plan_id WHERE date(sh.start_at) BETWEEN ? AND ?";args=[start,end]
+    sql="SELECT sh.*,e.name employee_name,e.code employee_code,p.name plan_name,p.status plan_status FROM shifts sh JOIN employees e ON e.id=sh.employee_id JOIN schedule_plans p ON p.id=sh.plan_id WHERE p.status='published' AND date(sh.start_at) BETWEEN ? AND ?";args=[start,end]
     if user["role"]=="employee":sql+=" AND sh.employee_id=?";args.append(user["employee_id"])
     elif user.get("store_id"):sql+=" AND sh.store_id=?";args.append(user["store_id"])
     return rows(db,sql+" ORDER BY sh.start_at,e.code",args)
+
+
+def schedule_workspace(db,user,start,end,task_id=None):
+    """返回候选方案工作区；正式历史班表仍只读取 published。"""
+    args=[start,end];where="t.intent='schedule_create' AND date(json_extract(t.parameters_json,'$.start_date'))<=date(?) AND date(json_extract(t.parameters_json,'$.end_date'))>=date(?)";args=[end,start]
+    if task_id:where+=" AND t.id=?";args.append(task_id)
+    task=db.execute(f"SELECT t.* FROM tasks t WHERE {where} ORDER BY t.created_at DESC LIMIT 1",args).fetchone()
+    if not task:return {"task":None,"plans":[],"published":schedule_history(db,user,start,end)}
+    detail=task_detail(db,user,task["id"]);return {"task":detail,"plans":detail["plans"],"published":schedule_history(db,user,start,end)}
 
 
 def employee_agent(db,user,text):
