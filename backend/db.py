@@ -143,14 +143,31 @@ def seed_demo_operations(db):
     """初始化可读的班次主数据、8月1-6日正式班表及考勤示例，仅在对应数据不存在时写入。"""
     now=utcnow();templates=[("shift-morning","MORNING","早班","09:00","17:00",8,"day","标准早班"),("shift-noon","NOON","午班","12:00","20:00",8,"day","标准午班"),("shift-evening","EVENING","晚班","14:00","22:00",8,"night","晚间客流班"),("shift-rest","REST","休息班","00:00","00:00",0,"rest","休息日，不计入工时")]
     db.executemany("INSERT OR IGNORE INTO shift_templates VALUES(?,?,?,?,?,?,?,?,?,?,?)",[(x[0],x[1],x[2],x[3],x[4],x[5],x[6],"active",x[7],now,now) for x in templates])
-    employees=[dict(item) for item in db.execute("SELECT id,store_id,role FROM employees WHERE status='active' ORDER BY code")]
+    employees=[dict(item) for item in db.execute("SELECT id,store_id,role,weekly_hour_limit,night_shift_limit,preferences_json FROM employees WHERE status='active' ORDER BY code")]
     if not employees:return
-    if not db.execute("SELECT 1 FROM schedule_plans WHERE id='plan-seed-august-1-6'").fetchone():
+    schedule_version=db.execute("SELECT value FROM meta WHERE key='demo_schedule_version'").fetchone()
+    if not schedule_version or schedule_version["value"]!="2":
+        db.execute("DELETE FROM shifts WHERE plan_id='plan-seed-august-1-6'");db.execute("DELETE FROM schedule_plans WHERE id='plan-seed-august-1-6'")
         db.execute("INSERT INTO schedule_plans VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",("plan-seed-august-1-6",None,"8月1日至6日基础班表","seed","published",0,dumps({"coverage":100,"required":len(employees)*6,"assigned":len(employees)*6,"cost":0,"preference_rate":0,"risk_count":0}),dumps({"facts":["系统初始化的基础班表"],"tradeoffs":["用于演示班次、请假和加班数据"],"compliance":{"hard_conflicts":0,"rules_checked":6}}),"seed",now,now,now))
-        for day in range(1,7):
-            for index,employee in enumerate(employees):
-                template=templates[(index+day-1)%3]
-                db.execute("INSERT INTO shifts VALUES(?,?,?,?,?,?,?,?,?,?,?)",(f"shift-seed-{day:02d}-{employee['id']}","plan-seed-august-1-6",employee["id"],employee["store_id"],employee["role"],f"2026-08-{day:02d}T{template[3]}:00+00:00",f"2026-08-{day:02d}T{template[4]}:00+00:00","published","seed",now,now))
+        for index,employee in enumerate(employees):
+            preference=loads(employee["preferences_json"],{}).get("ai_summary","");max_work_days=min(5,int(float(employee["weekly_hour_limit"])//8));rest_days=[]
+            if index<6:rest_days.append(index+1)
+            if "周二休息" in preference:rest_days.append(4)
+            if "周三" in preference and "不可用" in preference:rest_days.append(5)
+            if "仅工作日" in preference:rest_days.extend([1,2])
+            for candidate in range(1,7):
+                if len(set(rest_days))>=6-max_work_days:break
+                if candidate not in rest_days:rest_days.append(candidate)
+            rest_days=set(rest_days[:6-max_work_days]);night_count=0
+            for day in range(1,7):
+                if day in rest_days:template=templates[3]
+                elif "早班" in preference:template=templates[0]
+                elif "中班" in preference or "10:00后" in preference:template=templates[1]
+                elif "避免" in preference and "夜班" in preference:template=templates[(index+day)%2]
+                elif night_count<int(employee["night_shift_limit"]) and (index+day)%4==0:template=templates[2];night_count+=1
+                else:template=templates[(index+day)%2]
+                db.execute("INSERT INTO shifts VALUES(?,?,?,?,?,?,?,?,?,?,?)",(f"shift-seed-{day:02d}-{employee['id']}","plan-seed-august-1-6",employee["id"],employee["store_id"],employee["role"],f"2026-08-{day:02d}T{template[3]}:00+00:00",f"2026-08-{day:02d}T{template[4]}:00+00:00","published",f"seed:{template[0]}",now,now))
+        db.execute("INSERT OR REPLACE INTO meta VALUES('demo_schedule_version','2')")
     for index,employee in enumerate(employees[:6]):
         leave_date=f"2026-08-{index+1:02d}";db.execute("INSERT OR IGNORE INTO attendance VALUES(?,?,?,?,?,?,?,?,?)",(f"att-demo-leave-{employee['id']}",employee["id"],leave_date,"leave",f"{leave_date}T09:00:00+00:00",0,"seeded_leave",dumps({"leave_type":"年假","demo":True}),now))
     for index,employee in enumerate(employees[6:12]):
