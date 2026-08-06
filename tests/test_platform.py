@@ -46,6 +46,9 @@ class FlowStaffTests(unittest.TestCase):
         self.assertEqual(preferred_early,0)
         avoided_nights=self.db.execute("SELECT COUNT(*) n FROM shifts WHERE plan_id='plan-seed-august-1-6' AND employee_id='emp-003' AND time(start_at)='14:00:00'").fetchone()["n"]
         self.assertEqual(avoided_nights,0)
+        for day in (1,2):
+            counts=[self.db.execute("SELECT COUNT(*) n FROM shifts WHERE plan_id='plan-seed-august-1-6' AND store_id='store-a' AND date(start_at)=? AND substr(start_at,12,5)=?",(f"2026-08-{day:02d}",start)).fetchone()["n"] for start in ("09:00","12:00","14:00")]
+            self.assertLessEqual(max(counts)-min(counts),1)
         self.assertEqual(self.db.execute("SELECT COUNT(*) n FROM anomaly_events").fetchone()["n"],3)
 
     def test_login_and_application_shells_respect_hidden_state(self):

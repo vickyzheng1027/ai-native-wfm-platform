@@ -146,11 +146,12 @@ def seed_demo_operations(db):
     employees=[dict(item) for item in db.execute("SELECT id,store_id,role,weekly_hour_limit,night_shift_limit,preferences_json FROM employees WHERE status='active' ORDER BY code")]
     if not employees:return
     schedule_version=db.execute("SELECT value FROM meta WHERE key='demo_schedule_version'").fetchone()
-    if not schedule_version or schedule_version["value"]!="2":
+    if not schedule_version or schedule_version["value"]!="3":
         db.execute("DELETE FROM shifts WHERE plan_id='plan-seed-august-1-6'");db.execute("DELETE FROM schedule_plans WHERE id='plan-seed-august-1-6'")
         db.execute("INSERT INTO schedule_plans VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",("plan-seed-august-1-6",None,"8月1日至6日基础班表","seed","published",0,dumps({"coverage":100,"required":len(employees)*6,"assigned":len(employees)*6,"cost":0,"preference_rate":0,"risk_count":0}),dumps({"facts":["系统初始化的基础班表"],"tradeoffs":["用于演示班次、请假和加班数据"],"compliance":{"hard_conflicts":0,"rules_checked":6}}),"seed",now,now,now))
+        rest_by_employee={};night_counts={employee["id"]:0 for employee in employees}
         for index,employee in enumerate(employees):
-            preference=loads(employee["preferences_json"],{}).get("ai_summary","");max_work_days=min(5,int(float(employee["weekly_hour_limit"])//8));rest_days=[]
+            preference=loads(employee["preferences_json"],{}).get("ai_summary","");employee["preference"]=preference;max_work_days=min(5,int(float(employee["weekly_hour_limit"])//8));rest_days=[]
             if index<6:rest_days.append(index+1)
             if "周二休息" in preference:rest_days.append(4)
             if "周三" in preference and "不可用" in preference:rest_days.append(5)
@@ -158,16 +159,27 @@ def seed_demo_operations(db):
             for candidate in range(1,7):
                 if len(set(rest_days))>=6-max_work_days:break
                 if candidate not in rest_days:rest_days.append(candidate)
-            rest_days=set(rest_days[:6-max_work_days]);night_count=0
-            for day in range(1,7):
-                if day in rest_days:template=templates[3]
-                elif "早班" in preference:template=templates[0]
-                elif "中班" in preference or "10:00后" in preference:template=templates[1]
-                elif "避免" in preference and "夜班" in preference:template=templates[(index+day)%2]
-                elif night_count<int(employee["night_shift_limit"]) and (index+day)%4==0:template=templates[2];night_count+=1
-                else:template=templates[(index+day)%2]
-                db.execute("INSERT INTO shifts VALUES(?,?,?,?,?,?,?,?,?,?,?)",(f"shift-seed-{day:02d}-{employee['id']}","plan-seed-august-1-6",employee["id"],employee["store_id"],employee["role"],f"2026-08-{day:02d}T{template[3]}:00+00:00",f"2026-08-{day:02d}T{template[4]}:00+00:00","published",f"seed:{template[0]}",now,now))
-        db.execute("INSERT OR REPLACE INTO meta VALUES('demo_schedule_version','2')")
+            rest_by_employee[employee["id"]]=set(rest_days[:6-max_work_days])
+        stores=sorted({employee["store_id"] for employee in employees})
+        for day in range(1,7):
+            for store_id in stores:
+                store_employees=[employee for employee in employees if employee["store_id"]==store_id];working=[employee for employee in store_employees if day not in rest_by_employee[employee["id"]]]
+                ratio=(.30,.40,.30) if day in (1,2) else (.40,.35,.25);raw=[len(working)*value for value in ratio];base,remainder=divmod(len(working),3);counts=[base,base,base]
+                for slot in sorted(range(3),key=lambda item:raw[item]-int(raw[item]),reverse=True)[:remainder]:counts[slot]+=1
+                slots=[template_index for template_index,count in enumerate(counts) for _ in range(count)]
+                workers=sorted(working,key=lambda employee:("早班" not in employee["preference"] and "中班" not in employee["preference"] and "避免" not in employee["preference"],employee["id"]))
+                for employee in workers:
+                    preference=employee["preference"];preferred=0 if "早班" in preference else 1 if "中班" in preference or "10:00后" in preference else None
+                    allowed=[slot for slot in slots if not (slot==2 and (("避免" in preference and "夜班" in preference) or night_counts[employee["id"]]>=int(employee["night_shift_limit"])))]
+                    if not allowed:
+                        slots.remove(2);slots.append(1);allowed=[1]
+                    selected=preferred if preferred in allowed else allowed[0];slots.remove(selected);template=templates[selected];night_counts[employee["id"]]+=int(selected==2)
+                    db.execute("INSERT INTO shifts VALUES(?,?,?,?,?,?,?,?,?,?,?)",(f"shift-seed-{day:02d}-{employee['id']}","plan-seed-august-1-6",employee["id"],employee["store_id"],employee["role"],f"2026-08-{day:02d}T{template[3]}:00+00:00",f"2026-08-{day:02d}T{template[4]}:00+00:00","published",f"seed:{template[0]}",now,now))
+                for employee in store_employees:
+                    if employee in working:continue
+                    template=templates[3]
+                    db.execute("INSERT INTO shifts VALUES(?,?,?,?,?,?,?,?,?,?,?)",(f"shift-seed-{day:02d}-{employee['id']}","plan-seed-august-1-6",employee["id"],employee["store_id"],employee["role"],f"2026-08-{day:02d}T{template[3]}:00+00:00",f"2026-08-{day:02d}T{template[4]}:00+00:00","published",f"seed:{template[0]}",now,now))
+        db.execute("INSERT OR REPLACE INTO meta VALUES('demo_schedule_version','3')")
     for index,employee in enumerate(employees[:6]):
         leave_date=f"2026-08-{index+1:02d}";db.execute("INSERT OR IGNORE INTO attendance VALUES(?,?,?,?,?,?,?,?,?)",(f"att-demo-leave-{employee['id']}",employee["id"],leave_date,"leave",f"{leave_date}T09:00:00+00:00",0,"seeded_leave",dumps({"leave_type":"年假","demo":True}),now))
     for index,employee in enumerate(employees[6:12]):
