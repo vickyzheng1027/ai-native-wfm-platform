@@ -19,6 +19,7 @@ except ImportError:
     cp_model = None
 
 AUTOMATION_ADMISSION_LOCK = threading.RLock()
+AUTOMATION_CONNECTION_LOCK = threading.RLock()
 
 
 class ApiError(Exception):
@@ -520,7 +521,8 @@ def automation_event(db,user,body):
         except sqlite3.IntegrityError:raise ApiError("该业务事件已接收",409,"DUPLICATE_EVENT")
         audit(db,user,"automation.receive","automation_event",event_id)
     threading.Thread(target=process_event,args=(db,event_id,user),daemon=True).start()
-    return rowdict(db.execute("SELECT * FROM automation_events WHERE id=?",(event_id,)).fetchone())
+    with AUTOMATION_CONNECTION_LOCK:
+        return rowdict(db.execute("SELECT * FROM automation_events WHERE id=?",(event_id,)).fetchone())
 
 
 def approve_rule(db,user,rule_id):
@@ -557,6 +559,11 @@ def period_review(db,user):
 
 
 def process_event(db,event_id,user):
+    with AUTOMATION_CONNECTION_LOCK:
+        return _process_event(db,event_id,user)
+
+
+def _process_event(db,event_id,user):
     try:
         db.execute("UPDATE automation_events SET status='processing',attempts=attempts+1 WHERE id=?",(event_id,));db.commit();event=dict(db.execute("SELECT * FROM automation_events WHERE id=?",(event_id,)).fetchone())
         if event["event_type"]=="informational":result={"observed":True,"approval_required":False};task_id=None
