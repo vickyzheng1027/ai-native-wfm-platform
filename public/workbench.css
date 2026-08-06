@@ -1,0 +1,185 @@
+/* AI 指挥台专用布局。保持两侧为辅助轨道，中间业务流为唯一主焦点。 */
+.ai-workbench {
+  grid-template-columns: 238px minmax(0, 1fr) 248px;
+  gap: 28px;
+  max-width: 1480px;
+}
+
+.workbench-history,
+.workbench-rail {
+  overflow: visible;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.workbench-history .workbench-panel-head,
+.workbench-rail .workbench-panel-head {
+  padding: 4px 0 14px;
+  border-bottom: 1px solid #d9e2ef;
+  background: transparent;
+}
+
+.workbench-history .workbench-panel-head h2,
+.workbench-rail .workbench-panel-head h2 {
+  font-size: 14px;
+}
+
+.workbench-history .badge {
+  border-color: #c8d9f2;
+  background: #e8f0fc;
+  color: #2563eb;
+}
+
+.workbench-history-item {
+  margin: 5px 0;
+  border-bottom: 0;
+}
+
+.workbench-history-item > button {
+  min-height: 68px;
+  padding: 12px 13px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+}
+
+.workbench-history-item > button:hover {
+  background: #eef4fc;
+}
+
+.workbench-history-item > button[aria-expanded="true"] {
+  border-color: #bfd4f2;
+  background: #eef4fc;
+  box-shadow: inset 3px 0 0 #2563eb;
+}
+
+.workbench-history-item > [data-recent-detail] {
+  margin: 0 0 8px 12px;
+  padding: 10px 12px 12px;
+  border-left: 1px solid #c6d9f2;
+  background: transparent;
+}
+
+.workbench-main {
+  gap: 0;
+}
+
+.workbench-greeting {
+  min-height: 166px;
+  margin: 0;
+  border-bottom: 0;
+  border-radius: 10px 10px 0 0;
+}
+
+.workbench-greeting .badge {
+  align-self: flex-start;
+}
+
+.workbench-composer {
+  margin-bottom: 22px;
+  padding: 22px 28px;
+  border-top: 1px solid #dce7f5;
+  border-radius: 0 0 10px 10px;
+}
+
+.workbench-composer::before {
+  display: none;
+}
+
+.workbench-empty {
+  border-style: dashed;
+  background: transparent;
+  box-shadow: none;
+}
+
+.workbench-task .decision-flow {
+  border-top: 1px solid #c8d9ef;
+  border-left: 3px solid #2563eb;
+  border-radius: 8px;
+}
+
+.decision-flow {
+  padding: 24px 28px;
+}
+
+.decision-head h2 {
+  font-size: 18px;
+}
+
+.workbench-rail {
+  gap: 22px;
+}
+
+.rail-section {
+  border: 0 !important;
+  border-top: 1px solid #d9e2ef !important;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.rail-section .workbench-panel-head {
+  padding-top: 16px;
+}
+
+.rail-facts {
+  padding: 2px 0 8px;
+}
+
+.rail-facts > div {
+  padding: 11px 0;
+}
+
+.rail-metrics {
+  padding: 14px 0;
+}
+
+.rail-metrics > div {
+  margin: 0 3px;
+  padding: 11px 4px;
+  border: 1px solid #e4eaf2;
+  border-radius: 6px;
+  background: #f7f9fc;
+}
+
+@media (max-width: 1180px) {
+  .ai-workbench {
+    grid-template-columns: 220px minmax(0, 1fr);
+    gap: 22px;
+  }
+
+  .workbench-rail {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 22px;
+  }
+}
+
+@media (max-width: 900px) {
+  .ai-workbench {
+    grid-template-columns: 1fr;
+    gap: 18px;
+  }
+
+  .workbench-history { order: 2; }
+  .workbench-main { order: 1; }
+  .workbench-rail {
+    order: 3;
+    grid-column: auto;
+    grid-template-columns: 1fr;
+  }
+
+  .decision-flow { padding: 20px; }
+}
+
+@media (max-width: 620px) {
+  .workbench-greeting {
+    min-height: 145px;
+    padding: 23px 20px;
+  }
+
+  .workbench-composer { padding: 18px 20px; }
+  .decision-flow { padding: 18px 16px; }
+}
