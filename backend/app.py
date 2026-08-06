@@ -18,11 +18,11 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).parents[1]))
     from backend.ai import AIClient, rag_answer
     from backend.db import connect, rowdict, utcnow, verify_password
-    from backend.services import ApiError, activate_plan, anomalies, approve_rule, attendance_overview, audit, automation_event, backup_database, create_rule, create_task, decide_employee_request, employee_agent, employee_insights, employee_list, overview, period_review, publish_plan, rule_list, save_employee, schedule_history, task_detail, update_anomaly, update_rule
+    from backend.services import ApiError, activate_plan, anomalies, approve_rule, attendance_overview, audit, automation_event, backup_database, confirm_employee_request, create_rule, create_task, decide_employee_request, employee_agent, employee_insights, employee_list, overview, period_review, publish_plan, rule_list, save_employee, schedule_history, task_detail, update_anomaly, update_rule
 else:
     from .ai import AIClient, rag_answer
     from .db import connect, rowdict, utcnow, verify_password
-    from .services import ApiError, activate_plan, anomalies, approve_rule, attendance_overview, audit, automation_event, backup_database, create_rule, create_task, decide_employee_request, employee_agent, employee_insights, employee_list, overview, period_review, publish_plan, rule_list, save_employee, schedule_history, task_detail, update_anomaly, update_rule
+    from .services import ApiError, activate_plan, anomalies, approve_rule, attendance_overview, audit, automation_event, backup_database, confirm_employee_request, create_rule, create_task, decide_employee_request, employee_agent, employee_insights, employee_list, overview, period_review, publish_plan, rule_list, save_employee, schedule_history, task_detail, update_anomaly, update_rule
 
 ROOT=Path(__file__).parents[1];PUBLIC=ROOT/"public"
 print(f"[startup] Python {sys.version.split()[0]}，开始初始化 SQLite",flush=True)
@@ -126,6 +126,8 @@ class Handler(BaseHTTPRequestHandler):
         match=self.match(path,"/api/employee/requests/{id}/decision")
         if method=="POST" and match:
             body=self.body();return 200,{"ok":True,"data":decide_employee_request(DB,user,match["id"],body.get("status",""),body.get("note",""))}
+        match=self.match(path,"/api/employee/requests/{id}/confirm")
+        if method=="POST" and match:return 200,{"ok":True,"data":confirm_employee_request(DB,user,match["id"])}
         if method=="GET" and path=="/api/insights":return 200,{"ok":True,"data":employee_insights(DB,user)}
         if method=="GET" and path=="/api/reviews/current":return 200,{"ok":True,"data":period_review(DB,user)}
         if method=="POST" and path=="/api/employee/agent":return 200,{"ok":True,"data":employee_agent(DB,user,self.body().get("input_text",""))}

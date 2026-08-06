@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from backend.ai import AIClient, classify_intent, rag_answer
 from backend.db import connect, migrate, verify_password
-from backend.services import ApiError, activate_plan, anomalies, approve_rule, attendance_overview, automation_event, create_rule, create_task, decide_employee_request, employee_agent, employee_insights, employee_list, normalize_model_date, overview, parse_schedule_parameters, period_review, publish_plan, rule_list, save_employee, task_detail, update_anomaly, update_rule
+from backend.services import ApiError, activate_plan, anomalies, approve_rule, attendance_overview, automation_event, confirm_employee_request, create_rule, create_task, decide_employee_request, employee_agent, employee_insights, employee_list, normalize_model_date, overview, parse_schedule_parameters, period_review, publish_plan, rule_list, save_employee, task_detail, update_anomaly, update_rule
 
 
 class FlowStaffTests(unittest.TestCase):
@@ -299,7 +299,9 @@ class FlowStaffTests(unittest.TestCase):
     def test_employee_leave_request_does_not_modify_shifts(self):
         before=self.db.execute("SELECT COUNT(*) n FROM shifts").fetchone()["n"]
         result=employee_agent(self.db,self.employee,"我8月8日需要请假处理家庭事务")
-        self.assertEqual(result["data"]["status"],"pending_manager")
+        self.assertEqual(result["data"]["status"],"pending_confirmation")
+        confirmed=confirm_employee_request(self.db,self.employee,result["data"]["request_id"])
+        self.assertEqual(confirmed["status"],"pending_manager")
         self.assertEqual(self.db.execute("SELECT COUNT(*) n FROM shifts").fetchone()["n"],before)
 
     def test_employee_preference_is_persisted_as_soft_constraint(self):
@@ -397,6 +399,7 @@ class FlowStaffTests(unittest.TestCase):
 
     def test_manager_can_decide_employee_request_in_own_store(self):
         created=employee_agent(self.db,self.employee,"我8月8日需要请假")
+        confirm_employee_request(self.db,self.employee,created["data"]["request_id"])
         request_id=created["data"]["request_id"]
         decided=decide_employee_request(self.db,self.manager,request_id,"approved","已确认覆盖风险")
         self.assertEqual(decided["status"],"approved")

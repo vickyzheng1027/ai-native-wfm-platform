@@ -415,12 +415,21 @@ def employee_agent(db,user,text):
         return {"intent":intent,"answer":"已查询你的已发布班表。","data":{"shifts":schedule_history(db,user,"2026-08-01","2026-08-31")}}
     if intent["intent"] in ("leave_request","swap_request","adjust_request"):
         request_id=uid("request");analysis={"facts":["申请尚未改变原班次"],"suggestion":"等待主管审批与覆盖校验","model_mode":intent["mode"]}
-        db.execute("INSERT INTO employee_requests VALUES(?,?,?,?,?,?,?,?,?,?,?)",(request_id,employee_id,intent["intent"].replace("_request",""),None,text,dumps(intent.get("parameters",{})),dumps(analysis),"pending_manager",None,utcnow(),None));db.commit();audit(db,user,"employee_request.create","employee_request",request_id)
-        return {"intent":intent,"answer":"申请已提交。审批完成前原班次保持不变。","data":{"request_id":request_id,"status":"pending_manager","analysis":analysis}}
+        db.execute("INSERT INTO employee_requests VALUES(?,?,?,?,?,?,?,?,?,?,?)",(request_id,employee_id,intent["intent"].replace("_request",""),None,text,dumps(intent.get("parameters",{})),dumps(analysis),"pending_confirmation",None,utcnow(),None));db.commit();audit(db,user,"employee_request.draft","employee_request",request_id)
+        return {"intent":intent,"answer":"我已理解你的申请，请确认内容后再提交给主管。","data":{"request_id":request_id,"status":"pending_confirmation","analysis":analysis,"needs_confirmation":True}}
     if intent["intent"]=="preference_update":
         pref_id=uid("pref");db.execute("INSERT INTO employee_preferences VALUES(?,?,?,?,?,?,?,?,?,?)",(pref_id,employee_id,text,"ai_natural_language",dumps(intent.get("parameters",{})),intent["confidence"],"2026-08-05",None,"active",utcnow()));db.execute("UPDATE employees SET preferences_json=? WHERE id=?",(dumps({"ai_summary":intent["summary"],"raw_text":text}),employee_id));db.commit();audit(db,user,"preference.update","employee",employee_id)
         return {"intent":intent,"answer":"偏好已保存为软约束，将参与后续排班，但不承诺一定满足。","data":{"preference_id":pref_id}}
     return {"intent":intent,**rag_answer(db,client,user,text)}
+
+
+def confirm_employee_request(db,user,request_id):
+    if not user.get("employee_id"):raise ApiError("当前账号未关联员工档案",403,"NO_EMPLOYEE_PROFILE")
+    request=db.execute("SELECT * FROM employee_requests WHERE id=? AND employee_id=?",(request_id,user["employee_id"])).fetchone()
+    if not request:raise ApiError("申请不存在或无权操作",404,"NOT_FOUND")
+    if request["status"]!="pending_confirmation":raise ApiError("该申请不在待确认状态",409,"INVALID_REQUEST_STATUS")
+    db.execute("UPDATE employee_requests SET status=? WHERE id=?",("pending_manager",request_id));db.commit();audit(db,user,"employee_request.confirm","employee_request",request_id)
+    return {**rowdict(db.execute("SELECT * FROM employee_requests WHERE id=?",(request_id,)).fetchone()),"status":"pending_manager"}
 
 
 def anomalies(db,user):
