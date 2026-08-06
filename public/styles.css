@@ -8,4 +8,20 @@
 .plan-card.invalid{border-color:var(--red);background:#FFFBFB}
 .multi-select{height:140px;padding:8px}.multi-select option{padding:7px 9px;border-radius:4px}.field-hint{display:none}
 .rule-create-row{display:grid;grid-template-columns:minmax(220px,320px) auto;align-items:end;gap:12px;margin-top:12px}.rule-create-row label{display:grid;gap:6px;font-size:13px;font-weight:700}.inline-result{margin-top:14px;padding:13px;background:#f7f9fb;border:1px solid var(--line);border-radius:6px}.inline-result p:last-child{margin-bottom:0}@media(max-width:760px){.rule-create-row{grid-template-columns:1fr}}
+
+/* 统一为主流企业软件的中性灰与科技蓝视觉系统 */
+:root{--ink:#1F2937;--ink-2:#4B5563;--ink-3:#6B7280;--paper:#F5F7FA;--surface:#FFFFFF;--line:#E5E7EB;--line-dark:#D1D5DB;--nav:#111827;--nav-2:#1F2937;--mint:#3B82F6;--green:#16A34A;--green-soft:#ECFDF3;--blue:#2563EB;--blue-soft:#EFF6FF;--amber:#B45309;--amber-soft:#FFF7ED;--red:#DC2626;--red-soft:#FEF2F2;--shadow:0 4px 14px rgba(15,23,42,.06);--shadow-lg:0 18px 48px rgba(15,23,42,.16);--radius:6px}
+body{background:var(--paper);color:var(--ink)}:focus-visible{outline-color:var(--blue)}
+.brand-mark{background:var(--blue);color:#FFF;border-radius:6px}.eyebrow,.eyebrow.dark{color:var(--blue)}
+.login-shell{grid-template-columns:minmax(520px,1.08fr) minmax(420px,.92fr);background:#FFF}.login-brand{background:#F8FAFC;color:var(--ink);border-right:1px solid var(--line);padding:48px 64px}.login-brand:after{display:none}.login-statement h1{font-size:46px;font-weight:650;line-height:1.2}.login-statement p{color:var(--ink-2)}.login-proof{color:var(--ink-3)}.login-proof span:before{background:var(--blue)}.login-panel{background:#FFF}.login-card{padding:30px;border:1px solid var(--line);border-radius:8px;box-shadow:var(--shadow)}
+input,textarea,select{border-radius:6px;border-color:var(--line-dark)}input:focus,textarea:focus,select:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(37,99,235,.12)}
+.button{border-radius:6px;font-weight:600}.button.primary{background:var(--blue);border-color:var(--blue)}.button.primary:hover{background:#1D4ED8;border-color:#1D4ED8}.button.dark{background:var(--ink);border-color:var(--ink)}
+.sidebar{background:var(--nav);border-right:1px solid #263244}.nav-item{color:#CBD5E1}.nav-item:hover{background:#1F2937}.nav-item.active{background:#1E3A5F;color:#BFDBFE;border-color:#284B75}.nav-section{color:#64748B}.side-brand span span,.side-brand div span,.side-user span{color:#94A3B8}.avatar{background:#273449;color:#E2E8F0}
+.topbar{background:#FFF;backdrop-filter:none}.system-status{background:var(--blue-soft);color:var(--blue);border-radius:6px}.content{padding-top:24px}
+.surface,.metric-card,.plan-card,.anomaly-card{border-color:var(--line);box-shadow:none}.surface:hover,.metric-card:hover{border-color:#D1D5DB}.metric-card:before{background:var(--blue)}
+.command-surface{background:#FFF;color:var(--ink);border:1px solid var(--line);box-shadow:var(--shadow)}.command-surface .surface-head{border-color:var(--line)}.command-surface textarea{background:#FFF;border-color:var(--line-dark);color:var(--ink)}.command-surface label{color:var(--ink-2)}.context-chip{border-color:var(--line-dark);background:#FFF;color:var(--ink-2);border-radius:6px}.context-chip.active{border-color:var(--blue);background:var(--blue-soft);color:var(--blue)}.command-hint{color:var(--ink-3)}
+.plan-card.recommended{border-color:var(--blue);box-shadow:0 0 0 1px var(--blue)}.progress span{background:var(--blue)}.timeline-index{background:var(--blue-soft);color:var(--blue)}
+.badge{border-radius:5px}.panel-chevron,.icon-button{border-radius:6px}th{background:#F8FAFC;color:#64748B}tbody tr:hover{background:#F8FAFC}.attendance-matrix th:first-child{background:#F8FAFC}
+.understanding-mark{background:var(--blue-soft);color:var(--blue)}.understanding-summary,.technical-details pre,.plan-metrics div,.inline-result{background:#F8FAFC}.toast{background:#1F2937;border-radius:6px}
+@media(max-width:760px){.login-shell{grid-template-columns:1fr}.login-brand{border-right:0;border-bottom:1px solid var(--line)}.login-card{padding:0;border:0;box-shadow:none}}
 [hidden]{display:none!important}
