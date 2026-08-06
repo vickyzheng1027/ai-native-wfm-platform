@@ -11,7 +11,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from .ai import AIClient, classify_intent, rag_answer
-from .db import dumps, loads, rowdict, transaction, utcnow
+from .db import connect, dumps, loads, rowdict, transaction, utcnow
 
 try:
     from ortools.sat.python import cp_model
@@ -63,6 +63,11 @@ def save_employee(db,user,body,employee_id=None):
     employee_id=employee_id or uid("emp");existing=db.execute("SELECT * FROM employees WHERE id=?",(employee_id,)).fetchone()
     required=["code","name","role","department","store_id"]
     if any(not body.get(x) for x in required):raise ApiError("工号、姓名、岗位、部门和门店为必填项")
+    if not db.execute("SELECT 1 FROM job_positions WHERE name=? AND status='active'",(body["role"],)).fetchone():raise ApiError("所选岗位不存在或已停用")
+    if not db.execute("SELECT 1 FROM departments WHERE name=? AND status='active'",(body["department"],)).fetchone():raise ApiError("所选部门不存在或已停用")
+    if not db.execute("SELECT 1 FROM stores WHERE id=?",(body["store_id"],)).fetchone():raise ApiError("所选门店不存在")
+    invalid_skills=[skill.get("skill") for skill in body.get("skills",[]) if not db.execute("SELECT 1 FROM skill_catalog WHERE name=? AND status='active'",(skill.get("skill"),)).fetchone()]
+    if invalid_skills:raise ApiError("包含无效技能："+"、".join(str(skill) for skill in invalid_skills))
     values=(body["code"],body["name"],body["role"],body["department"],body["store_id"],body.get("employment_type","全职"),body.get("status","active"),body.get("hire_date","2026-01-01"),body.get("manager_id"),body.get("phone",""),body.get("email",""),float(body.get("hourly_rate",0)),float(body.get("weekly_hour_limit",40)),int(body.get("night_shift_limit",2)),dumps(body.get("preferences",{})))
     with transaction(db):
         if existing:db.execute("UPDATE employees SET code=?,name=?,role=?,department=?,store_id=?,employment_type=?,status=?,hire_date=?,manager_id=?,phone=?,email=?,hourly_rate=?,weekly_hour_limit=?,night_shift_limit=?,preferences_json=? WHERE id=?",values+(employee_id,))
@@ -241,9 +246,18 @@ def create_task(db,user,text,context="auto",trigger_event_id=None):
             params["demand_items"]=local["demand_items"];params["role"]=local["role"];params["headcount"]=local["headcount"]
     db.execute("INSERT INTO tasks VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(task_id,user["id"],intent["context"],text,intent["intent"],"queued",0,dumps(params),dumps([]),trigger_event_id,1,None,utcnow(),None));db.commit()
     audit(db,user,"task.create","task",task_id,details={"intent":intent["intent"],"mode":intent["mode"]})
-    if intent["intent"]=="schedule_create":threading.Thread(target=run_schedule_task,args=(db,task_id,user),daemon=True).start()
+    if intent["intent"]=="schedule_create":
+        database_path=db.execute("PRAGMA database_list").fetchone()["file"]
+        if database_path:threading.Thread(target=run_schedule_task_on_connection,args=(database_path,task_id,user),daemon=True).start()
+        else:run_schedule_task(db,task_id,user)
     else:run_non_schedule_task(db,task_id,user,intent)
     return {"task_id":task_id,"intent":intent,"status":"queued"}
+
+
+def run_schedule_task_on_connection(database_path,task_id,user):
+    worker_db=connect(database_path)
+    try:run_schedule_task(worker_db,task_id,user)
+    finally:worker_db.close()
 
 
 def add_step(db,task_id,stage,name,status,business,technical,metrics=None):

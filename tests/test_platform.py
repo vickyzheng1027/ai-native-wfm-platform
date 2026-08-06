@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from backend.ai import AIClient, classify_intent, rag_answer
-from backend.db import connect, verify_password
+from backend.db import connect, migrate, verify_password
 from backend.services import ApiError, activate_plan, anomalies, approve_rule, attendance_overview, automation_event, create_rule, create_task, decide_employee_request, employee_agent, employee_insights, employee_list, normalize_model_date, overview, parse_schedule_parameters, period_review, publish_plan, save_employee, task_detail, update_anomaly
 
 
@@ -23,7 +23,11 @@ class FlowStaffTests(unittest.TestCase):
             if value is not None:os.environ[key]=value
 
     def test_seed_contains_complete_business_data(self):
-        self.assertEqual(self.db.execute("SELECT COUNT(*) n FROM employees").fetchone()["n"],12)
+        self.assertEqual(self.db.execute("SELECT COUNT(*) n FROM employees").fetchone()["n"],32)
+        self.assertEqual(self.db.execute("SELECT COUNT(*) n FROM stores").fetchone()["n"],8)
+        self.assertEqual(self.db.execute("SELECT COUNT(*) n FROM job_positions").fetchone()["n"],10)
+        self.assertEqual(self.db.execute("SELECT COUNT(*) n FROM departments").fetchone()["n"],5)
+        self.assertEqual(self.db.execute("SELECT COUNT(*) n FROM skill_catalog").fetchone()["n"],10)
         self.assertGreaterEqual(self.db.execute("SELECT COUNT(*) n FROM attendance").fetchone()["n"],60)
         self.assertGreaterEqual(self.db.execute("SELECT COUNT(*) n FROM employee_skills").fetchone()["n"],20)
         self.assertEqual(self.db.execute("SELECT COUNT(*) n FROM rules").fetchone()["n"],6)
@@ -87,11 +91,27 @@ class FlowStaffTests(unittest.TestCase):
             save_employee(self.db,self.manager,{"code":"X","name":"越权","role":"导购","department":"销售","store_id":"store-b"})
 
     def test_employee_create_persists_profile_and_certified_skills(self):
-        created=save_employee(self.db,self.manager,{"code":"SH099","name":"新增员工","role":"导购","department":"销售部","store_id":"store-a","hourly_rate":38,"weekly_hour_limit":36,"preferences":{"ai_summary":"优先早班"},"skills":[{"skill":"销售","proficiency":3,"certified":True}]})
+        created=save_employee(self.db,self.manager,{"code":"SH099","name":"新增员工","role":"导购","department":"销售服务","store_id":"store-a","hourly_rate":38,"weekly_hour_limit":36,"preferences":{"ai_summary":"优先早班"},"skills":[{"skill":"销售","proficiency":3,"certified":True},{"skill":"顾客服务","proficiency":3,"certified":True}]})
         self.assertEqual(created["code"],"SH099")
         self.assertEqual(created["preferences"]["ai_summary"],"优先早班")
         self.assertEqual(created["skills"][0]["skill"],"销售")
         self.assertEqual(created["skills"][0]["certified"],1)
+
+    def test_organization_expansion_migration_is_idempotent(self):
+        migrate(self.db);migrate(self.db)
+        self.assertEqual(self.db.execute("SELECT COUNT(*) n FROM employees").fetchone()["n"],32)
+        self.assertEqual(self.db.execute("SELECT COUNT(*) n FROM stores").fetchone()["n"],8)
+        self.assertEqual(self.db.execute("SELECT COUNT(*) n FROM skill_catalog").fetchone()["n"],10)
+
+    def test_employee_form_uses_database_backed_master_data_selects(self):
+        root=Path(__file__).parents[1];script=(root/"public"/"app.js").read_text(encoding="utf-8");app=(root/"backend"/"app.py").read_text(encoding="utf-8")
+        self.assertIn('id="employeeRole" name="role" required><option',script)
+        self.assertIn('id="employeeDepartment" name="department" required><option',script)
+        self.assertIn('id="employeeSkills" name="skills" class="multi-select" multiple',script)
+        self.assertIn("formData.getAll('skills')",script)
+        self.assertIn('"positions":[dict(x)',app)
+        self.assertIn('"departments":[dict(x)',app)
+        self.assertIn('"skills":[dict(x)',app)
 
     def test_employee_page_binds_add_button_to_real_create_api(self):
         script=(Path(__file__).parents[1]/"public"/"app.js").read_text(encoding="utf-8")

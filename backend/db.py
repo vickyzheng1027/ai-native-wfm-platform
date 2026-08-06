@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def utcnow():
@@ -67,6 +67,9 @@ def migrate(db):
     db.executescript("""
     CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS stores(id TEXT PRIMARY KEY,code TEXT UNIQUE,name TEXT,city TEXT);
+    CREATE TABLE IF NOT EXISTS departments(id TEXT PRIMARY KEY,code TEXT UNIQUE,name TEXT UNIQUE,status TEXT);
+    CREATE TABLE IF NOT EXISTS job_positions(id TEXT PRIMARY KEY,code TEXT UNIQUE,name TEXT UNIQUE,department TEXT,status TEXT);
+    CREATE TABLE IF NOT EXISTS skill_catalog(id TEXT PRIMARY KEY,code TEXT UNIQUE,name TEXT UNIQUE,category TEXT,status TEXT);
     CREATE TABLE IF NOT EXISTS employees(id TEXT PRIMARY KEY,code TEXT UNIQUE,name TEXT,role TEXT,department TEXT,store_id TEXT,employment_type TEXT,status TEXT,hire_date TEXT,manager_id TEXT,phone TEXT,email TEXT,hourly_rate REAL,weekly_hour_limit REAL,night_shift_limit INTEGER,preferences_json TEXT,FOREIGN KEY(store_id) REFERENCES stores(id));
     CREATE TABLE IF NOT EXISTS employee_skills(id TEXT PRIMARY KEY,employee_id TEXT,skill TEXT,proficiency INTEGER,target_level INTEGER,certified INTEGER,certified_at TEXT,expires_at TEXT,evidence TEXT,FOREIGN KEY(employee_id) REFERENCES employees(id));
     CREATE TABLE IF NOT EXISTS employee_preferences(id TEXT PRIMARY KEY,employee_id TEXT,raw_text TEXT,preference_type TEXT,value_json TEXT,confidence REAL,effective_from TEXT,effective_to TEXT,status TEXT,created_at TEXT,FOREIGN KEY(employee_id) REFERENCES employees(id));
@@ -94,7 +97,34 @@ def migrate(db):
         db.execute("INSERT INTO meta VALUES('schema_version',?)", (str(SCHEMA_VERSION),))
     if not db.execute("SELECT 1 FROM stores LIMIT 1").fetchone():
         seed(db)
+    seed_organization_expansion(db)
+    db.execute("UPDATE meta SET value=? WHERE key='schema_version'",(str(SCHEMA_VERSION),))
     db.commit()
+
+
+def seed_organization_expansion(db):
+    now=utcnow()
+    stores=[("store-d","SH-D04","上海虹桥天地店","上海"),("store-e","SH-E05","上海五角场店","上海"),("store-f","SH-F06","上海中山公园店","上海"),("store-g","SH-G07","上海前滩太古里店","上海"),("store-h","SH-H08","上海大宁国际店","上海")]
+    departments=[("dept-ops","OPS","门店运营","active"),("dept-sales","SALES","销售服务","active"),("dept-front","FRONT","前台服务","active"),("dept-warehouse","WAREHOUSE","仓储运营","active"),("dept-digital","DIGITAL","数字运营","active")]
+    positions=[("pos-service","SERVICE","客服专员","前台服务","active"),("pos-stock","STOCK","库存专员","仓储运营","active"),("pos-display","DISPLAY","陈列专员","销售服务","active"),("pos-supervisor","SUPERVISOR","值班主管","门店运营","active"),("pos-online","ONLINE","线上订单专员","数字运营","active")]
+    base_positions=[("pos-manager","MANAGER","店长","门店运营","active"),("pos-cashier","CASHIER","收银员","前台服务","active"),("pos-senior-sales","SENIOR_SALES","资深导购","销售服务","active"),("pos-sales","SALES_ASSOCIATE","导购","销售服务","active"),("pos-stock-clerk","STOCK_CLERK","理货员","仓储运营","active")]
+    skills=[("skill-cat-sales","SALES","销售","销售服务","active"),("skill-cat-cashier","CASHIER","收银","前台服务","active"),("skill-cat-service","SERVICE","顾客服务","前台服务","active"),("skill-cat-stocking","STOCKING","理货","仓储运营","active"),("skill-cat-inventory","INVENTORY","库存","仓储运营","active"),("skill-cat-ops","OPERATIONS","运营管理","门店运营","active"),("skill-cat-display","DISPLAY","商品陈列","销售服务","active"),("skill-cat-fulfillment","FULFILLMENT","线上履约","数字运营","active"),("skill-cat-safety","SAFETY","安全巡检","门店运营","active"),("skill-cat-data","DATA","数据分析","数字运营","active")]
+    db.executemany("INSERT OR IGNORE INTO stores VALUES(?,?,?,?)",stores)
+    db.executemany("INSERT OR IGNORE INTO departments VALUES(?,?,?,?)",departments)
+    db.executemany("INSERT OR IGNORE INTO job_positions VALUES(?,?,?,?,?)",base_positions+positions)
+    db.executemany("INSERT OR IGNORE INTO skill_catalog VALUES(?,?,?,?,?)",skills)
+    names=["陆安","沈佳","韩雪","蒋欣","曹宇","邓琳","冯超","彭悦","董浩","袁静","潘晨","吕雯","梁峰","谢雨","宋杰","苏晴","叶凡","程璐","魏宁","余可"]
+    roles=[("客服专员","前台服务",("顾客服务","收银")),("库存专员","仓储运营",("库存","理货")),("陈列专员","销售服务",("商品陈列","销售")),("值班主管","门店运营",("运营管理","安全巡检")),("线上订单专员","数字运营",("线上履约","数据分析"))]
+    store_ids=["store-a"]*12+["store-d","store-e","store-f","store-g","store-h","store-d","store-e","store-f"]
+    employees=[];employee_skills=[];balances=[]
+    for index,name in enumerate(names,13):
+        role,department,role_skills=roles[(index-13)%len(roles)];employee_id=f"emp-{index:03d}";store_id=store_ids[index-13];employment="全职" if index%4 else "兼职";weekly=40 if employment=="全职" else 24
+        employees.append((employee_id,f"FS{index:03d}",name,role,department,store_id,employment,"active",f"202{2+(index%4)}-{1+(index%9):02d}-15",None,f"138****{2100+index}",f"fs{index:03d}@flowstaff.local",30+(index%8),weekly,1+(index%2),dumps({"ai_summary":["偏好早班","周末可用","班型灵活","避免连续夜班"][index%4]})))
+        for skill_index,skill in enumerate(role_skills):employee_skills.append((f"skill-{employee_id}-{skill_index}",employee_id,skill,3+(index+skill_index)%3,4,1,"2026-01-01","2028-01-01","组织技能认证"))
+        for leave_index,(leave_type,entitled) in enumerate((("年假",10),("病假",8),("事假",5),("调休",12))):balances.append((f"lb-{employee_id}-{leave_index}",employee_id,2026,leave_type,entitled,index%3,0))
+    db.executemany("INSERT OR IGNORE INTO employees VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",employees)
+    db.executemany("INSERT OR IGNORE INTO employee_skills VALUES(?,?,?,?,?,?,?,?,?)",employee_skills)
+    db.executemany("INSERT OR IGNORE INTO leave_balances VALUES(?,?,?,?,?,?,?)",balances)
 
 
 def seed(db):
