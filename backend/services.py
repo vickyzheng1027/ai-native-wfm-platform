@@ -591,7 +591,7 @@ def adjust_shift(db,user,shift_id,body):
 
 
 def schedule_history(db,user,start,end):
-    sql="SELECT sh.*,e.name employee_name,e.code employee_code,p.name plan_name,p.status plan_status FROM shifts sh JOIN employees e ON e.id=sh.employee_id JOIN schedule_plans p ON p.id=sh.plan_id WHERE p.status='published' AND date(sh.start_at) BETWEEN ? AND ?";args=[start,end]
+    sql="SELECT sh.*,e.name employee_name,e.code employee_code,p.name plan_name,p.status plan_status FROM shifts sh JOIN employees e ON e.id=sh.employee_id JOIN schedule_plans p ON p.id=sh.plan_id WHERE p.status IN ('published','active') AND date(sh.start_at) BETWEEN ? AND ?";args=[start,end]
     if user["role"]=="employee":sql+=" AND sh.employee_id=?";args.append(user["employee_id"])
     elif user.get("store_id"):sql+=" AND sh.store_id=?";args.append(user["store_id"])
     return rows(db,sql+" ORDER BY sh.start_at,e.code",args)
