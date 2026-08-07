@@ -5,6 +5,7 @@
   max-width: 1480px;
 }
 .task-stage code{display:none!important}
+.task-error-message{margin:18px 34px 0;padding:14px 16px;border:1px solid #fecaca;border-left:4px solid #ef4444;background:#fff7f7;color:#991b1b;border-radius:8px}.task-error-message p{margin:6px 0;color:#7f1d1d}.task-error-message small{color:#b91c1c}
 
 .workbench-history,
 .workbench-rail {
