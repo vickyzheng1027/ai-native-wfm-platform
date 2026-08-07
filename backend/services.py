@@ -391,6 +391,13 @@ def generate_plan(db,task,strategy,avoid_employee_ids=None):
     templates=rows(db,"SELECT * FROM shift_templates WHERE status='active' ORDER BY start_time")
     if not templates:raise ApiError("当前没有启用的班次模板，无法生成排班方案",422,"SHIFT_TEMPLATE_REQUIRED")
     rules=rows(db,"SELECT * FROM rules WHERE status='active' AND (store_id IS NULL OR store_id=?)",(store_id,))
+    rule_limits={"weekly_hours":None,"night_shifts":None}
+    for rule in rules:
+        definition=loads(rule.get("definition_json"),{}) if isinstance(rule.get("definition_json"),str) else {}
+        field=definition.get("field");value=definition.get("value")
+        if field in ("night_shift_limit","night_shift_hours"):field="night_shifts"
+        if rule.get("strength")=="hard" and field in rule_limits and isinstance(value,(int,float)):
+            rule_limits[field]=float(value) if rule_limits[field] is None else min(rule_limits[field],float(value))
     demands=apply_explicit_demand_constraints(rows(db,"SELECT * FROM business_demands WHERE store_id=? AND demand_date BETWEEN ? AND ? ORDER BY demand_date,start_time",(store_id,params.get("start_date"),params.get("end_date"))),params)
     if not demands:raise ApiError("没有可执行的岗位需求，禁止生成空排班方案",422,"EMPTY_SCHEDULE_DEMAND")
     employees=[employee for employee in employee_list(db,{"role":"admin","store_id":None}) if employee["store_id"]==store_id and employee["status"]=="active"]
@@ -440,9 +447,11 @@ def generate_plan(db,task,strategy,avoid_employee_ids=None):
             by_week={}
             for key,variable in variables.items():
                 if key[2]==employee_index:by_week.setdefault(schedule_week(demands[key[0]]["demand_date"]),[]).append(int(candidate_meta[key][1]*10)*variable)
-            for weighted in by_week.values():model.Add(sum(weighted)<=int(employee["weekly_hour_limit"]*10))
+            weekly_limit=min(float(employee["weekly_hour_limit"]),rule_limits["weekly_hours"] or float(employee["weekly_hour_limit"]))
+            for weighted in by_week.values():model.Add(sum(weighted)<=int(weekly_limit*10))
             night_variables=[variable for key,variable in variables.items() if key[2]==employee_index and demands[key[0]]["end_time"]>="22:00"]
-            if night_variables:model.Add(sum(night_variables)<=int(employee["night_shift_limit"]))
+            night_limit=min(int(employee["night_shift_limit"]),int(rule_limits["night_shifts"] or employee["night_shift_limit"]))
+            if night_variables:model.Add(sum(night_variables)<=night_limit)
         model.Maximize(sum(candidate_meta[key][3]*variable for key,variable in variables.items()))
         solver=cp_model.CpSolver();solver.parameters.max_time_in_seconds=float(os.getenv("WFM_SOLVER_TIMEOUT_SECONDS","8"));status=solver.Solve(model)
         if status not in (cp_model.OPTIMAL,cp_model.FEASIBLE):raise ApiError("CP-SAT 在当前硬约束下无解",409,"NO_FEASIBLE_SCHEDULE")
@@ -462,8 +471,10 @@ def generate_plan(db,task,strategy,avoid_employee_ids=None):
                 if any(x["employee_id"]==employee["id"] and x["date"]==demand["demand_date"] for x in assigned):continue
                 duration=(datetime.fromisoformat(demand["demand_date"]+"T"+demand["end_time"])-datetime.fromisoformat(demand["demand_date"]+"T"+demand["start_time"])).seconds/3600
                 week_key=(employee["id"],schedule_week(demand["demand_date"]))
-                if weekly_hours.get(week_key,0)+duration>employee["weekly_hour_limit"]:continue
-                if demand["end_time"]>="22:00" and night_counts.get(employee["id"],0)>=employee["night_shift_limit"]:continue
+                weekly_limit=min(float(employee["weekly_hour_limit"]),rule_limits["weekly_hours"] or float(employee["weekly_hour_limit"]))
+                if weekly_hours.get(week_key,0)+duration>weekly_limit:continue
+                night_limit=min(int(employee["night_shift_limit"]),int(rule_limits["night_shifts"] or employee["night_shift_limit"]))
+                if demand["end_time"]>="22:00" and night_counts.get(employee["id"],0)>=night_limit:continue
                 pref=employee["preferences"].get("ai_summary","");hit=("早班" in pref and int(demand["start_time"][:2])<12) or "班型灵活" in pref
                 fairness=weekly_hours.get(week_key,0);skill=max((x["proficiency"] for x in employee["skills"]),default=1)
                 cost_weight={"balanced":1.2,"experience":.45,"cost":2.0}.get(strategy,1.0)
