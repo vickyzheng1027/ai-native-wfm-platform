@@ -433,6 +433,9 @@ class FlowStaffTests(unittest.TestCase):
     def test_seeded_attendance_covers_every_active_anomaly_type(self):
         events=anomalies(self.db,{**self.manager,"store_id":None,"role":"admin"})
         self.assertTrue({"continuous_overtime","repeated_late","leave_increase"}.issubset({event["anomaly_type"] for event in events}))
+        leave=next(event for event in events if event["anomaly_type"]=="leave_increase")
+        self.assertIn("近28天请假6次",leave["evidence"])
+        self.assertIn("不能据此判断离职", "；".join(leave["possible_causes"]))
 
     def test_anomaly_action_requires_note_and_is_audited(self):
         event=anomalies(self.db,self.manager)[0]

@@ -187,7 +187,7 @@ def seed_demo_operations(db):
     for index,employee in enumerate(employees[6:12]):
         overtime_date=f"2026-08-{index+1:02d}";db.execute("INSERT OR IGNORE INTO attendance VALUES(?,?,?,?,?,?,?,?,?)",(f"att-demo-overtime-{employee['id']}",employee["id"],overtime_date,"overtime",f"{overtime_date}T20:30:00+00:00",2,"seeded_overtime",dumps({"approved":True,"demo":True}),now))
     attendance_version=db.execute("SELECT value FROM meta WHERE key='demo_attendance_version'").fetchone()
-    if not attendance_version or attendance_version["value"]!="2":
+    if not attendance_version or attendance_version["value"]!="3":
         db.execute("DELETE FROM attendance WHERE event_date BETWEEN '2026-08-01' AND '2026-08-07' AND source IN ('seeded_hris','seeded_leave','seeded_overtime')")
         fixtures={
             "emp-003":{2:("overtime",3),4:("overtime",3),6:("overtime",3)},
@@ -204,7 +204,10 @@ def seed_demo_operations(db):
                 db.execute("INSERT INTO attendance VALUES(?,?,?,?,?,?,?,?,?)",(f"att-fixture-{employee['id']}-{day}",employee["id"],event_date,event_type,f"{event_date}T09:{minute:02d}:00+00:00",hours,"seeded_hris",dumps(metadata),now))
         db.execute("DELETE FROM attendance WHERE employee_id='emp-007' AND event_date BETWEEN '2026-07-04' AND '2026-07-31'")
         db.execute("INSERT INTO attendance VALUES(?,?,?,?,?,?,?,?,?)",("att-fixture-emp-007-prior","emp-007","2026-07-10","normal","2026-07-10T09:00:00+00:00",0,"seeded_hris",dumps({"verified":True,"demo_fixture":True}),now))
-        db.execute("INSERT OR REPLACE INTO meta VALUES('demo_attendance_version','2')")
+        leave_dates=("2026-07-15","2026-07-22","2026-07-28")
+        for index,event_date in enumerate(leave_dates):
+            db.execute("INSERT OR REPLACE INTO attendance VALUES(?,?,?,?,?,?,?,?,?)",(f"att-fixture-emp-007-leave-{index}","emp-007",event_date,"leave",f"{event_date}T09:00:00+00:00",0,"seeded_hris",dumps({"verified":True,"demo_fixture":True,"leave_type":"年假"}),now))
+        db.execute("INSERT OR REPLACE INTO meta VALUES('demo_attendance_version','3')")
 
 
 def seed(db):

@@ -614,7 +614,7 @@ def refresh_attendance_anomalies(db):
             detected[(employee["id"],"continuous_overtime")]={"risk":"high" if max_streak>=4 or overtime_hours>=12 else "medium","confidence":min(.98,.76+max_streak*.04+overtime_hours/200),"evidence":[f"近7天有{len(overtime_dates)}天加班",f"最长连续加班{max_streak}天",f"近7天累计加班{overtime_hours}小时"],"impact":"持续加班可能增加疲劳和出勤波动风险","causes":["业务高峰或临时缺员可能增加了工时，需结合排班核实","关键技能可能集中在少数员工"],"suggestions":["检查后续班次和最小休息间隔","评估增加替补或分散技能覆盖"]}
         recent_leave=len({item["event_date"] for item in records if item["event_type"]=="leave" and item["event_date"]>=recent28});previous_leave=len({item["event_date"] for item in records if item["event_type"]=="leave" and previous28_start<=item["event_date"]<=previous28_end})
         if recent_leave>=3 and recent_leave>=max(2,previous_leave*2):
-            detected[(employee["id"],"leave_increase")]={"risk":"low","confidence":min(.9,.62+recent_leave*.05),"evidence":[f"近28天请假{recent_leave}次",f"前一周期请假{previous_leave}次"],"impact":"班表稳定性可能需要额外关注","causes":["请假变化涉及员工隐私，具体原因必须由员工自愿说明"],"suggestions":["仅核实后续可用时间，不推断健康或家庭状况","必要时准备替补覆盖"]}
+            detected[(employee["id"],"leave_increase")]={"risk":"medium" if recent_leave>=5 else "low","confidence":min(.9,.62+recent_leave*.05),"evidence":[f"近28天请假{recent_leave}次",f"前一周期请假{previous_leave}次",f"较前一周期增加{recent_leave-previous_leave}次"],"impact":"短期请假频率上升，可能影响班表稳定性，需要主管关注","causes":["频繁请假可能与个人安排、健康或其他未披露因素有关，不能据此判断离职","请假变化涉及员工隐私，具体原因必须由员工自愿说明"],"suggestions":["由主管进行非惩罚性沟通，确认后续可用时间和支持需求","仅在员工自愿表达离职意愿时进入正式留任沟通，不要根据请假直接下结论","提前准备替补覆盖，降低临时缺岗影响"]}
     now=utcnow()
     with transaction(db):
         for (employee_id,anomaly_type),value in detected.items():
