@@ -412,7 +412,7 @@ def generate_plan(db,task,strategy):
                         score=100000-int(employee["hourly_rate"]*180)+skill*80+(800 if hit else 0)-employee_index*20
                     else:
                         # 员工体验方案显式鼓励偏好匹配、技能和人员轮换，避免与成本方案复用同一组合。
-                        score=(100000 if hit else 0)+skill*1800-int(employee["hourly_rate"]*12)+employee_index*1200
+                        score=(100000 if hit else 0)+skill*1800-int(employee["hourly_rate"]*12)+employee_index*1000000
                     candidate_meta[demand_index,slot,employee_index]=(employee,duration,hit,score)
                 # 每个需求槽位必须恰好覆盖一人；允许不完整方案会导致覆盖率为 0/不可选。
                 if not eligible:
