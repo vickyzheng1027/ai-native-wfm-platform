@@ -744,8 +744,23 @@ def decide_employee_request(db,user,request_id,status,note=""):
     request=db.execute("SELECT r.*,e.store_id FROM employee_requests r JOIN employees e ON e.id=r.employee_id WHERE r.id=?",(request_id,)).fetchone()
     if not request:raise ApiError("员工申请不存在",404,"NOT_FOUND")
     if user["role"]=="manager" and request["store_id"]!=user.get("store_id"):raise ApiError("无权审批其他门店申请",403,"FORBIDDEN")
+    if request["status"]!="pending_manager":raise ApiError("该申请已处理，不能重复审批",409,"INVALID_REQUEST_STATUS")
     payload=loads(request["payload_json"],{});payload["decision_note"]=note
-    db.execute("UPDATE employee_requests SET status=?,payload_json=?,decided_at=? WHERE id=?",(status,dumps(payload),utcnow(),request_id));db.commit();audit(db,user,"employee_request.decide","employee_request",request_id,details={"status":status,"note":note})
+    decided_at=utcnow()
+    with transaction(db):
+        db.execute("UPDATE employee_requests SET status=?,payload_json=?,decided_at=? WHERE id=?",(status,dumps(payload),decided_at,request_id))
+        if status=="approved" and request["request_type"]=="leave":
+            leave_date=payload.get("leave_date") or payload.get("start_date");leave_type=payload.get("leave_type") or "年假"
+            if not leave_date:raise ApiError("请假申请缺少日期",422,"LEAVE_DATE_REQUIRED")
+            db.execute("DELETE FROM attendance WHERE employee_id=? AND event_date=? AND source IN ('seeded_hris','seeded_leave','seeded_overtime')",(request["employee_id"],leave_date))
+            metadata={"request_id":request_id,"leave_type":leave_type,"start_time":payload.get("start_time"),"end_time":payload.get("end_time"),"approved_by":user["id"],"decision_note":note}
+            db.execute("INSERT OR REPLACE INTO attendance VALUES(?,?,?,?,?,?,?,?,?)",(f"attendance-leave-{request_id}",request["employee_id"],leave_date,"leave",f"{leave_date}T{payload.get('start_time') or '09:00'}:00+00:00",0,"employee_request",dumps(metadata),decided_at))
+            balance=db.execute("SELECT id FROM leave_balances WHERE employee_id=? AND year=? AND leave_type=?",(request["employee_id"],int(leave_date[:4]),leave_type)).fetchone()
+            if balance:db.execute("UPDATE leave_balances SET used=used+1,pending=CASE WHEN pending>=1 THEN pending-1 ELSE pending END WHERE id=?",(balance["id"],))
+            db.execute("INSERT INTO employee_notifications VALUES(?,?,?,?,?,?,?,?,?)",(uid("notification"),request["employee_id"],"leave_approved","请假申请已批准",f"{leave_date} {leave_type}申请已批准，考勤记录已更新。",request_id,"unread",decided_at,None))
+        elif status=="rejected":
+            db.execute("INSERT INTO employee_notifications VALUES(?,?,?,?,?,?,?,?,?)",(uid("notification"),request["employee_id"],"request_rejected","申请未通过",f"申请未通过：{note or '请联系主管了解详情'}",request_id,"unread",decided_at,None))
+    audit(db,user,"employee_request.decide","employee_request",request_id,details={"status":status,"note":note})
     return rowdict(db.execute("SELECT * FROM employee_requests WHERE id=?",(request_id,)).fetchone())
 
 

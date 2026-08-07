@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from backend.ai import AIClient, classify_intent, rag_answer
-from backend.db import connect, migrate, verify_password
+from backend.db import connect, loads, migrate, verify_password
 from backend.services import ApiError, activate_plan, anomalies, approve_rule, attendance_overview, automation_event, business_month_period, confirm_employee_request, confirm_schedule_task, create_rule, create_task, decide_employee_request, employee_agent, employee_insights, employee_list, normalize_model_date, overview, parse_schedule_parameters, period_review, publish_plan, rule_list, save_employee, schedule_history, schedule_workspace, task_detail, update_anomaly, update_rule
 
 
@@ -526,6 +526,13 @@ class FlowStaffTests(unittest.TestCase):
         decided=decide_employee_request(self.db,self.manager,request_id,"approved","已确认覆盖风险")
         self.assertEqual(decided["status"],"approved")
         self.assertTrue(decided["decided_at"])
+        attendance=self.db.execute("SELECT * FROM attendance WHERE employee_id=? AND event_date=? AND event_type='leave'",(self.employee["employee_id"],"2026-08-08")).fetchone()
+        self.assertIsNotNone(attendance)
+        self.assertEqual(attendance["source"],"employee_request")
+        self.assertEqual(loads(attendance["metadata_json"],{})["request_id"],request_id)
+        overview=attendance_overview(self.db,self.manager,"2026-08-08","2026-08-08",code="FS002")
+        self.assertEqual(overview["summary"]["leave_records"],1)
+        self.assertEqual(self.db.execute("SELECT COUNT(*) n FROM employee_notifications WHERE employee_id=? AND resource_id=?",(self.employee["employee_id"],request_id)).fetchone()["n"],1)
 
     def test_employee_insights_use_attendance_and_skill_data(self):
         insights=employee_insights(self.db,self.manager)
