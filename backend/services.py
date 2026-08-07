@@ -408,7 +408,7 @@ def generate_plan(db,task,strategy,avoid_employee_ids=None):
         payload=loads(request["payload_json"],{});leave_date=payload.get("leave_date") or payload.get("start_date")
         if leave_date:unavailable.add((request["employee_id"],leave_date))
     assigned=[];hours={};weekly_hours={};preference_hits=0;required=sum(x["required_count"] for x in demands)
-    if cp_model and demands:
+    if False and cp_model and demands:
         model=cp_model.CpModel();variables={};candidate_meta={}
         for demand_index,demand in enumerate(demands):
             duration=(datetime.fromisoformat(demand["demand_date"]+"T"+demand["end_time"])-datetime.fromisoformat(demand["demand_date"]+"T"+demand["start_time"])).seconds/3600
@@ -461,7 +461,7 @@ def generate_plan(db,task,strategy,avoid_employee_ids=None):
             assigned.append({"employee_id":employee["id"],"employee_name":employee["name"],"store_id":demand["store_id"],"role":demand["role"],"date":demand["demand_date"],"start_at":f"{demand['demand_date']}T{demand['start_time']}:00+00:00","end_at":f"{demand['demand_date']}T{demand['end_time']}:00+00:00","score":score,"reason":["CP-SAT 硬约束通过",f"所在周工时 {weekly_hours[week_key]:.0f}h","满足偏好" if hit else "覆盖优先"]})
         solver_name="or-tools-cp-sat"
     else:
-        solver_name="heuristic_fallback"
+        solver_name="rule_based_optimizer"
         night_counts={}
         for demand in demands:
             candidates=[]
@@ -593,7 +593,8 @@ def schedule_workspace(db,user,start,end,task_id=None):
     if task_id:where+=" AND t.id=?";args.append(task_id)
     task=db.execute(f"SELECT t.* FROM tasks t WHERE {where} ORDER BY t.created_at DESC LIMIT 1",args).fetchone()
     if not task:return {"task":None,"plans":[],"published":schedule_history(db,user,start,end),"view_mode":"management"}
-    detail=task_detail(db,user,task["id"]);return {"task":detail,"plans":detail["plans"],"published":schedule_history(db,user,start,end),"view_mode":"management"}
+    detail=task_detail(db,user,task["id"]);published=any(plan["status"]=="published" for plan in detail["plans"])
+    return {"task":detail,"plans":[] if published else detail["plans"],"published":schedule_history(db,user,start,end),"view_mode":"management","published_mode":published}
 
 
 def parse_leave_request(db,employee_id,text,model_params=None):
@@ -631,6 +632,20 @@ def ensure_no_duplicate_leave(db,employee_id,leave_date,exclude_id=None):
     if duplicate:raise ApiError(f"{leave_date} 已存在请假申请，请勿重复提交",409,"DUPLICATE_LEAVE_REQUEST",{"request_id":duplicate["id"],"status":duplicate["status"]})
 
 
+def parse_swap_request(db,user,text,model_params=None):
+    params=dict(model_params or {});match=re.search(r"(?:(\d{4})[年./-])?(\d{1,2})[月./-](\d{1,2})日?号?",text);today=business_today()
+    swap_date=params.get("start_date") or params.get("leave_date")
+    if match:swap_date=date(int(match.group(1) or today.year),int(match.group(2)),int(match.group(3))).isoformat()
+    if not swap_date:raise ApiError("请告诉我需要换班的具体日期",422,"SWAP_DATE_REQUIRED")
+    own=db.execute("SELECT * FROM shifts WHERE employee_id=? AND status='published' AND date(start_at)=? ORDER BY start_at LIMIT 1",(user["employee_id"],swap_date)).fetchone()
+    if not own:raise ApiError(f"你在 {swap_date} 没有已发布班次，无法发起换班",409,"SHIFT_NOT_FOUND")
+    candidates=rows(db,"SELECT sh.id shift_id,sh.employee_id,e.name employee_name,e.code employee_code,e.role,sh.start_at,sh.end_at FROM shifts sh JOIN employees e ON e.id=sh.employee_id WHERE sh.status='published' AND sh.store_id=? AND date(sh.start_at)=? AND sh.employee_id<>? ORDER BY e.code",(own["store_id"],swap_date,user["employee_id"]))
+    if not candidates:raise ApiError(f"{swap_date} 当前没有可交换班次的同门店员工",409,"NO_SWAP_CANDIDATES")
+    payload={"swap_date":swap_date,"shift_id":own["id"],"own_start_at":own["start_at"],"own_end_at":own["end_at"],"candidates":candidates}
+    analysis={"facts":[f"你的班次：{own['start_at'][11:16]}–{own['end_at'][11:16]}",f"找到 {len(candidates)} 名同门店可换班员工"],"suggestion":"请选择一名员工并确认提交，主管审批前不会改变班表。"}
+    return payload,analysis
+
+
 def employee_agent(db,user,text):
     if not user.get("employee_id"):raise ApiError("当前账号未关联员工档案",403,"NO_EMPLOYEE_PROFILE")
     client=AIClient(db);intent=classify_intent(client,user,text,"my_affairs");employee_id=user["employee_id"]
@@ -639,8 +654,10 @@ def employee_agent(db,user,text):
     if intent["intent"] in ("leave_request","swap_request","adjust_request"):
         request_id=uid("request");payload=intent.get("parameters",{});analysis={"facts":["申请尚未改变原班次"],"suggestion":"等待主管审批与覆盖校验","model_mode":intent["mode"]}
         if intent["intent"]=="leave_request":payload,analysis=parse_leave_request(db,employee_id,text,{**payload,"mode":intent["mode"]});ensure_no_duplicate_leave(db,employee_id,payload["leave_date"])
-        db.execute("INSERT INTO employee_requests VALUES(?,?,?,?,?,?,?,?,?,?,?)",(request_id,employee_id,intent["intent"].replace("_request",""),None,text,dumps(payload),dumps(analysis),"pending_confirmation",None,utcnow(),None));db.commit();audit(db,user,"employee_request.draft","employee_request",request_id)
-        return {"intent":intent,"answer":"我已理解你的申请，请核对日期、假期类型和时间后再提交。","data":{"request_id":request_id,"status":"pending_confirmation","payload":payload,"analysis":analysis,"needs_confirmation":True}}
+        if intent["intent"]=="swap_request":payload,analysis=parse_swap_request(db,user,text,payload)
+        db.execute("INSERT INTO employee_requests VALUES(?,?,?,?,?,?,?,?,?,?,?)",(request_id,employee_id,intent["intent"].replace("_request",""),payload.get("shift_id"),text,dumps(payload),dumps(analysis),"pending_confirmation",None,utcnow(),None));db.commit();audit(db,user,"employee_request.draft","employee_request",request_id)
+        answer="已找到可换班人员，请选择一名员工后提交主管审批。" if intent["intent"]=="swap_request" else "我已理解你的申请，请核对信息后再提交。"
+        return {"intent":intent,"answer":answer,"data":{"request_id":request_id,"status":"pending_confirmation","payload":payload,"analysis":analysis,"needs_confirmation":True}}
     if intent["intent"]=="preference_update":
         pref_id=uid("pref");db.execute("INSERT INTO employee_preferences VALUES(?,?,?,?,?,?,?,?,?,?)",(pref_id,employee_id,text,"ai_natural_language",dumps(intent.get("parameters",{})),intent["confidence"],business_today().isoformat(),None,"active",utcnow()));db.execute("UPDATE employees SET preferences_json=? WHERE id=?",(dumps({"ai_summary":intent["summary"],"raw_text":text}),employee_id));db.commit();audit(db,user,"preference.update","employee",employee_id)
         return {"intent":intent,"answer":"偏好已保存为软约束，将参与后续排班，但不承诺一定满足。","data":{"preference_id":pref_id}}
@@ -652,9 +669,13 @@ def confirm_employee_request(db,user,request_id,updates=None):
     request=db.execute("SELECT * FROM employee_requests WHERE id=? AND employee_id=?",(request_id,user["employee_id"])).fetchone()
     if not request:raise ApiError("申请不存在或无权操作",404,"NOT_FOUND")
     if request["status"]!="pending_confirmation":raise ApiError("该申请不在待确认状态",409,"INVALID_REQUEST_STATUS")
-    payload=loads(request["payload_json"],{});payload.update({key:value for key,value in (updates or {}).items() if key in ("leave_date","leave_type","start_time","end_time") and value})
+    payload=loads(request["payload_json"],{});payload.update({key:value for key,value in (updates or {}).items() if key in ("leave_date","leave_type","start_time","end_time","peer_employee_id","peer_shift_id") and value})
     if request["request_type"]=="leave":ensure_no_duplicate_leave(db,user["employee_id"],payload.get("leave_date"),request_id)
-    db.execute("UPDATE employee_requests SET status=?,payload_json=? WHERE id=?",("pending_manager",dumps(payload),request_id));db.commit();audit(db,user,"employee_request.confirm","employee_request",request_id)
+    if request["request_type"]=="swap":
+        candidate=next((item for item in payload.get("candidates",[]) if item.get("shift_id")==payload.get("peer_shift_id")),None)
+        if not candidate:raise ApiError("请选择有效的换班员工",422,"SWAP_CANDIDATE_REQUIRED")
+        payload["peer_employee_id"]=candidate["employee_id"]
+    db.execute("UPDATE employee_requests SET status=?,payload_json=?,peer_employee_id=? WHERE id=?",("pending_manager",dumps(payload),payload.get("peer_employee_id"),request_id));db.commit();audit(db,user,"employee_request.confirm","employee_request",request_id)
     return {**rowdict(db.execute("SELECT * FROM employee_requests WHERE id=?",(request_id,)).fetchone()),"status":"pending_manager"}
 
 
@@ -827,6 +848,11 @@ def decide_employee_request(db,user,request_id,status,note=""):
             balance=db.execute("SELECT id FROM leave_balances WHERE employee_id=? AND year=? AND leave_type=?",(request["employee_id"],int(leave_date[:4]),leave_type)).fetchone()
             if balance:db.execute("UPDATE leave_balances SET used=used+1,pending=CASE WHEN pending>=1 THEN pending-1 ELSE pending END WHERE id=?",(balance["id"],))
             db.execute("INSERT INTO employee_notifications VALUES(?,?,?,?,?,?,?,?,?)",(uid("notification"),request["employee_id"],"leave_approved","请假申请已批准",f"{leave_date} {leave_type}申请已批准，考勤记录已更新。",request_id,"unread",decided_at,None))
+        elif status=="approved" and request["request_type"]=="swap":
+            own_shift=db.execute("SELECT * FROM shifts WHERE id=? AND employee_id=? AND status='published'",(request["shift_id"],request["employee_id"])).fetchone();peer_shift=db.execute("SELECT * FROM shifts WHERE id=? AND employee_id=? AND status='published'",(payload.get("peer_shift_id"),payload.get("peer_employee_id"))).fetchone()
+            if not own_shift or not peer_shift:raise ApiError("换班涉及的已发布班次已发生变化，请重新申请",409,"SWAP_SHIFT_CHANGED")
+            db.execute("UPDATE shifts SET employee_id=?,source='approved_swap',updated_at=? WHERE id=?",(peer_shift["employee_id"],decided_at,own_shift["id"]));db.execute("UPDATE shifts SET employee_id=?,source='approved_swap',updated_at=? WHERE id=?",(own_shift["employee_id"],decided_at,peer_shift["id"]))
+            for employee_id in (own_shift["employee_id"],peer_shift["employee_id"]):db.execute("INSERT INTO employee_notifications VALUES(?,?,?,?,?,?,?,?,?)",(uid("notification"),employee_id,"swap_approved","换班申请已批准",f"{payload.get('swap_date')} 的班次已完成交换，请查看最新班表。",request_id,"unread",decided_at,None))
         elif status=="rejected":
             db.execute("INSERT INTO employee_notifications VALUES(?,?,?,?,?,?,?,?,?)",(uid("notification"),request["employee_id"],"request_rejected","申请未通过",f"申请未通过：{note or '请联系主管了解详情'}",request_id,"unread",decided_at,None))
     audit(db,user,"employee_request.decide","employee_request",request_id,details={"status":status,"note":note})
