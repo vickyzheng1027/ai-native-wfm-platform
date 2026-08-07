@@ -188,14 +188,16 @@ def seed_demo_operations(db):
     for index,employee in enumerate(employees[6:12]):
         overtime_date=f"2026-08-{index+1:02d}";db.execute("INSERT OR IGNORE INTO attendance VALUES(?,?,?,?,?,?,?,?,?)",(f"att-demo-overtime-{employee['id']}",employee["id"],overtime_date,"overtime",f"{overtime_date}T20:30:00+00:00",2,"seeded_overtime",dumps({"approved":True,"demo":True}),now))
     attendance_version=db.execute("SELECT value FROM meta WHERE key='demo_attendance_version'").fetchone()
-    if not attendance_version or attendance_version["value"]!="3":
+    if not attendance_version or attendance_version["value"]!="4":
         db.execute("DELETE FROM attendance WHERE event_date BETWEEN '2026-08-01' AND '2026-08-07' AND source IN ('seeded_hris','seeded_leave','seeded_overtime')")
+        leave_days=[row["start_at"][:10] for row in db.execute("SELECT start_at FROM shifts WHERE plan_id='plan-seed-august-1-6' AND employee_id='emp-007' AND time(start_at)<>time(end_at) ORDER BY start_at LIMIT 3")]
+        absence_days=[row["start_at"][:10] for row in db.execute("SELECT start_at FROM shifts WHERE plan_id='plan-seed-august-1-6' AND employee_id='emp-008' AND time(start_at)<>time(end_at) ORDER BY start_at LIMIT 2")]
         fixtures={
             "emp-003":{2:("overtime",3),4:("overtime",3),6:("overtime",3)},
             "emp-004":{1:("overtime",3),2:("overtime",3),3:("overtime",3)},
             "emp-005":{1:("late",13),3:("late",15),5:("late",17)},
-            "emp-007":{2:("leave",0),4:("leave",0),6:("leave",0)},
-            "emp-008":{4:("absence",0),5:("absence",0)},
+            "emp-007":{int(day[8:10]):("leave",0) for day in leave_days},
+            "emp-008":{int(day[8:10]):("absence",0) for day in absence_days},
         }
         for employee in employees:
             for day in range(1,8):
@@ -208,9 +210,7 @@ def seed_demo_operations(db):
         leave_dates=("2026-07-15","2026-07-22","2026-07-28")
         for index,event_date in enumerate(leave_dates):
             db.execute("INSERT OR REPLACE INTO attendance VALUES(?,?,?,?,?,?,?,?,?)",(f"att-fixture-emp-007-leave-{index}","emp-007",event_date,"leave",f"{event_date}T09:00:00+00:00",0,"seeded_hris",dumps({"verified":True,"demo_fixture":True,"leave_type":"年假"}),now))
-        for employee_id,event_date in (("emp-007","2026-08-02"),("emp-007","2026-08-04"),("emp-007","2026-08-06"),("emp-008","2026-08-04"),("emp-008","2026-08-05")):
-            db.execute("UPDATE shifts SET start_at=?,end_at=?,source=? WHERE plan_id='plan-seed-august-1-6' AND employee_id=? AND date(start_at)=?",(f"{event_date}T00:00:00+00:00",f"{event_date}T00:00:00+00:00","seed:shift-rest",employee_id,event_date))
-        db.execute("INSERT OR REPLACE INTO meta VALUES('demo_attendance_version','3')")
+        db.execute("INSERT OR REPLACE INTO meta VALUES('demo_attendance_version','4')")
 
 
 def seed(db):
