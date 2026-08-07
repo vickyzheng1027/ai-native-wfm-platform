@@ -453,7 +453,7 @@ def generate_plan(db,task,strategy,avoid_employee_ids=None):
             night_limit=min(int(employee["night_shift_limit"]),int(rule_limits["night_shifts"] or employee["night_shift_limit"]))
             if night_variables:model.Add(sum(night_variables)<=night_limit)
         model.Maximize(sum(candidate_meta[key][3]*variable for key,variable in variables.items()))
-        solver=cp_model.CpSolver();solver.parameters.max_time_in_seconds=float(os.getenv("WFM_SOLVER_TIMEOUT_SECONDS","8"));status=solver.Solve(model)
+        solver=cp_model.CpSolver();solver.parameters.max_time_in_seconds=float(os.getenv("WFM_SOLVER_TIMEOUT_SECONDS","2"));solver.parameters.num_search_workers=min(8,os.cpu_count() or 2);status=solver.Solve(model)
         if status not in (cp_model.OPTIMAL,cp_model.FEASIBLE):raise ApiError("CP-SAT 在当前硬约束下无解",409,"NO_FEASIBLE_SCHEDULE")
         for key,variable in variables.items():
             if not solver.Value(variable):continue
@@ -496,19 +496,19 @@ def generate_plan(db,task,strategy,avoid_employee_ids=None):
 def run_schedule_task(db,task_id,user):
     try:
         task=dict(db.execute("SELECT * FROM tasks WHERE id=?",(task_id,)).fetchone());client=AIClient(db)
-        add_step(db,task_id,1,"目标理解","completed","已识别排班周期、岗位需求、覆盖目标和成本边界","已完成自然语言目标解析",loads(task["parameters_json"],{}));time.sleep(.7)
+        add_step(db,task_id,1,"目标理解","completed","已识别排班周期、岗位需求、覆盖目标和成本边界","已完成自然语言目标解析",loads(task["parameters_json"],{}));time.sleep(.08)
         sources=rows(db,"SELECT id,title,source_type FROM vector_documents ORDER BY source_type LIMIT 8")
-        add_step(db,task_id,2,"RAG 数据检索","completed",f"已加载 {len(sources)} 条规则与组织知识","已检索规则、员工偏好、技能与历史数据",{"citations":[x["id"] for x in sources]});time.sleep(.7)
+        add_step(db,task_id,2,"RAG 数据检索","completed",f"已加载 {len(sources)} 条规则与组织知识","已检索规则、员工偏好、技能与历史数据",{"citations":[x["id"] for x in sources]});time.sleep(.08)
         params=loads(task["parameters_json"],{});params["resolved_store_id"]=task_store_id(db,user,params);task["parameters_json"]=dumps(params);db.execute("UPDATE tasks SET parameters_json=? WHERE id=?",(task["parameters_json"],task_id));db.commit()
         demands,demand_source=ensure_demand_forecast(db,user,params)
         required_positions=sum(item["required_count"] for item in demands)
-        add_step(db,task_id,3,"需求预测","completed",f"已按日期、时段和岗位形成 {len(demands)} 条需求，共 {required_positions} 个岗位","已结合历史客流与业务目标完成需求预测",{"demand_rows":len(demands),"required_positions":required_positions,"source":demand_source});time.sleep(.7)
+        add_step(db,task_id,3,"需求预测","completed",f"已按日期、时段和岗位形成 {len(demands)} 条需求，共 {required_positions} 个岗位","已结合历史客流与业务目标完成需求预测",{"demand_rows":len(demands),"required_positions":required_positions,"source":demand_source});time.sleep(.08)
         generated=[];balanced_employee_ids=set()
         for name,strategy in (("覆盖与成本均衡方案","balanced"),("员工体验优先方案","experience")):
             assigned,metrics=generate_plan(db,task,strategy,balanced_employee_ids if strategy=="experience" else None);plan_id=uid("plan")
             generated.append((plan_id,name,strategy,assigned,metrics))
             if strategy=="balanced":balanced_employee_ids={item["employee_id"] for item in assigned}
-            time.sleep(.8)
+            time.sleep(.08)
         if not generated or any(item[4]["required"]<=0 for item in generated):raise ApiError("岗位需求为空，禁止创建推荐方案",422,"EMPTY_RECOMMENDATION")
         recommended=max(generated,key=lambda x:x[4]["coverage"]*2+x[4]["preference_rate"]*.35-x[4]["cost"]*.002)
         with transaction(db):
@@ -517,8 +517,8 @@ def run_schedule_task(db,task_id,user):
                 explanation={"facts":[f"覆盖 {metrics['assigned']}/{metrics['required']} 个岗位需求",f"预计人工成本 ¥{metrics['cost']}",f"偏好满足率 {metrics['preference_rate']}%",f"已匹配 {metrics['shift_templates']} 个班次模板",f"已应用 {metrics['rules_applied']} 条生效规则"],"tradeoffs":[tradeoff],"compliance":{"hard_conflicts":0,"rules_checked":metrics["rules_applied"]}}
                 db.execute("INSERT INTO schedule_plans VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",(plan_id,task_id,name,strategy,"recommended" if plan_id==recommended[0] else "candidate",1 if plan_id==recommended[0] else 0,dumps(metrics),dumps(explanation),metrics["solver"],utcnow(),None,None))
                 for item in assigned:db.execute("INSERT INTO shifts VALUES(?,?,?,?,?,?,?,?,?,?,?)",(uid("shift"),plan_id,item["employee_id"],item["store_id"],item["role"],item["start_at"],item["end_at"],"draft","optimizer",utcnow(),utcnow()))
-        solver_mode=generated[0][4]["solver"];add_step(db,task_id,4,"方案求解","completed","已用约束求解生成成本均衡和员工体验两套方案","已完成两套目标函数独立求解",{"plans":2,"solver":solver_mode});time.sleep(.8)
-        add_step(db,task_id,5,"合规风控","completed","已检查工时上限、单日一班、夜班上限和休息间隔，未发现硬约束冲突","已完成硬约束与软约束校验",{"rules_checked":6,"hard_conflicts":0});time.sleep(.8)
+        solver_mode=generated[0][4]["solver"];add_step(db,task_id,4,"方案求解","completed","已用约束求解生成成本均衡和员工体验两套方案","已完成两套目标函数独立求解",{"plans":2,"solver":solver_mode});time.sleep(.08)
+        add_step(db,task_id,5,"合规风控","completed","已检查工时上限、单日一班、夜班上限和休息间隔，未发现硬约束冲突","已完成硬约束与软约束校验",{"rules_checked":6,"hard_conflicts":0});time.sleep(.08)
         add_step(db,task_id,6,"决策评估","completed",f"推荐{recommended[1]}，可对比两套方案后选择生效","已完成覆盖率、成本、偏好、公平性和风险评估",recommended[4])
         db.execute("UPDATE tasks SET status='completed',progress=100,rag_citations_json=?,completed_at=? WHERE id=?",(dumps([x["id"] for x in sources]),utcnow(),task_id));db.commit()
     except Exception as exc:

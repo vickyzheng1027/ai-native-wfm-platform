@@ -110,8 +110,22 @@ def migrate(db):
         seed(db)
     seed_organization_expansion(db)
     seed_demo_operations(db)
+    ensure_default_schedule_rules(db)
     db.execute("UPDATE meta SET value=? WHERE key='schema_version'",(str(SCHEMA_VERSION),))
     db.commit()
+
+
+def ensure_default_schedule_rules(db):
+    """为已有数据库补齐排班求解所需的默认规则，幂等执行。"""
+    now=utcnow();today=datetime.now(ZoneInfo(os.getenv("WFM_TIMEZONE","Asia/Shanghai"))).date().isoformat()
+    defaults=[
+        ("rule-7","班次间最小休息","相邻两个工作班次至少间隔11小时","company","hard","fatigue",{"operator":"gte","field":"min_rest_hours","value":11}),
+        ("rule-8","连续工作天数上限","员工连续工作不超过6天","company","hard","hours",{"operator":"lte","field":"consecutive_work_days","value":6}),
+        ("rule-9","高峰时段覆盖","客流高峰时段岗位覆盖率不得低于95%","store","hard","coverage",{"operator":"gte","field":"peak_coverage","value":95}),
+        ("rule-10","技能匹配优先","优先安排具备岗位认证的员工，缺口需提示主管","store","soft","skills",{"operator":"prefer","field":"skill_match","value":1}),
+    ]
+    for rid,name,description,scope,strength,domain,definition in defaults:
+        db.execute("INSERT OR IGNORE INTO rules VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(rid,name,description,scope,strength,domain,dumps(definition),"active",1,"system",1.0,"user-admin","user-hr",now,now,"store-a" if scope=="store" else None,today if scope=="store" else None,None))
 
 
 def seed_organization_expansion(db):
@@ -250,6 +264,10 @@ def seed(db):
         ("rule-4","员工偏好优先","在满足覆盖与合规后尽量满足班型偏好","store","soft","schedule",{"preference_weight":18},"active",1,"manual",1.0),
         ("rule-5","高峰技能覆盖","高峰每班至少一名高熟练员工","store","soft","skills",{"min_proficiency":4,"min_count":1},"active",1,"manual",1.0),
         ("rule-6","连续夜班提醒","连续两次夜班触发疲劳提醒","company","notice","fatigue",{"night_streak":2},"active",1,"manual",1.0),
+        ("rule-7","班次间最小休息","相邻两个工作班次至少间隔11小时","company","hard","fatigue",{"operator":"gte","field":"min_rest_hours","value":11},"active",1,"system",1.0),
+        ("rule-8","连续工作天数上限","员工连续工作不超过6天","company","hard","hours",{"operator":"lte","field":"consecutive_work_days","value":6},"active",1,"system",1.0),
+        ("rule-9","高峰时段覆盖","客流高峰时段岗位覆盖率不得低于95%","store","hard","coverage",{"operator":"gte","field":"peak_coverage","value":95},"active",1,"system",1.0),
+        ("rule-10","技能匹配优先","优先安排具备岗位认证的员工，缺口需提示主管","store","soft","skills",{"operator":"prefer","field":"skill_match","value":1},"active",1,"system",1.0),
     ]
     today=datetime.now(ZoneInfo(os.getenv("WFM_TIMEZONE","Asia/Shanghai"))).date().isoformat()
     db.executemany("INSERT INTO rules VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",[(x[0],x[1],x[2],x[3],x[4],x[5],dumps(x[6]),x[7],x[8],x[9],x[10],"user-admin","user-hr",now,now,"store-a" if x[3]=="store" else None,today if x[3]=="store" else None,None) for x in rules])
