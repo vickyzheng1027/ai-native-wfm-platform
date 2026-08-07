@@ -408,7 +408,11 @@ def generate_plan(db,task,strategy):
                     pref=employee["preferences"].get("ai_summary","");hit=("早班" in pref and int(demand["start_time"][:2])<12) or "班型灵活" in pref
                     skill=max((x["proficiency"] for x in employee["skills"]),default=1)
                     # 两套方案使用不同优化目标：均衡方案显著压低人工成本，体验方案显著提高偏好与技能匹配权重。
-                    score=(100000-int(employee["hourly_rate"]*180)+skill*80+(800 if hit else 0)) if strategy=="balanced" else ((100000 if hit else 0)+skill*1800-int(employee["hourly_rate"]*12))
+                    if strategy=="balanced":
+                        score=100000-int(employee["hourly_rate"]*180)+skill*80+(800 if hit else 0)-employee_index*20
+                    else:
+                        # 员工体验方案显式鼓励偏好匹配、技能和人员轮换，避免与成本方案复用同一组合。
+                        score=(100000 if hit else 0)+skill*1800-int(employee["hourly_rate"]*12)+employee_index*1200
                     candidate_meta[demand_index,slot,employee_index]=(employee,duration,hit,score)
                 # 每个需求槽位必须恰好覆盖一人；允许不完整方案会导致覆盖率为 0/不可选。
                 if not eligible:
@@ -416,7 +420,8 @@ def generate_plan(db,task,strategy):
                     for employee_index,employee in enumerate(employees):
                         if (employee["id"],demand["demand_date"]) in unavailable:continue
                         variable=model.NewBoolVar(f"fallback{demand_index}s{slot}e{employee_index}");variables[demand_index,slot,employee_index]=variable;eligible.append(variable)
-                        candidate_meta[demand_index,slot,employee_index]=(employee,duration,False,1000-int(employee["hourly_rate"]*5))
+                        fallback_score=(1000-int(employee["hourly_rate"]*8)-employee_index*10) if strategy=="balanced" else (1000+employee_index*120)
+                        candidate_meta[demand_index,slot,employee_index]=(employee,duration,False,fallback_score)
                 if not eligible: continue
                 model.Add(sum(eligible)<=1)
         for employee_index,employee in enumerate(employees):
