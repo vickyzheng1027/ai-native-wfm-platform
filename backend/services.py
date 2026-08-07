@@ -597,8 +597,12 @@ def schedule_workspace(db,user,start,end,task_id=None):
     if task_id:where+=" AND t.id=?";args.append(task_id)
     task=db.execute(f"SELECT t.* FROM tasks t WHERE {where} ORDER BY t.created_at DESC LIMIT 1",args).fetchone()
     if not task:return {"task":None,"plans":[],"published":schedule_history(db,user,start,end),"view_mode":"management"}
-    detail=task_detail(db,user,task["id"]);published=any(plan["status"]=="published" for plan in detail["plans"])
-    return {"task":detail,"plans":[] if published else detail["plans"],"published":schedule_history(db,user,start,end),"view_mode":"management","published_mode":published}
+    detail=task_detail(db,user,task["id"]);selected=next((plan for plan in detail["plans"] if plan["status"] in ("active","published")),None);published=bool(selected and selected["status"]=="published")
+    if selected and not published:
+        preview_shifts=selected["shifts"]
+    else:
+        preview_shifts=schedule_history(db,user,start,end)
+    return {"task":detail,"plans":[] if selected else detail["plans"],"published":preview_shifts,"view_mode":"management","published_mode":published,"confirmed_mode":bool(selected)}
 
 
 def parse_leave_request(db,employee_id,text,model_params=None):
