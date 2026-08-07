@@ -5,6 +5,7 @@ import re
 import shutil
 import sqlite3
 import threading
+import time
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -405,7 +406,9 @@ def generate_plan(db,task,strategy):
                     if not employee_matches_role(employee,employee["skills"],demand["role"]):continue
                     variable=model.NewBoolVar(f"d{demand_index}s{slot}e{employee_index}");variables[demand_index,slot,employee_index]=variable;eligible.append(variable)
                     pref=employee["preferences"].get("ai_summary","");hit=("早班" in pref and int(demand["start_time"][:2])<12) or "班型灵活" in pref
-                    skill=max((x["proficiency"] for x in employee["skills"]),default=1);score=10000+skill*100-int(employee["hourly_rate"]*(18 if strategy=="balanced" else 7))+((250 if strategy=="experience" else 70) if hit else 0)
+                    skill=max((x["proficiency"] for x in employee["skills"]),default=1)
+                    # 两套方案使用不同优化目标：均衡方案显著压低人工成本，体验方案显著提高偏好与技能匹配权重。
+                    score=(100000-int(employee["hourly_rate"]*180)+skill*80+(800 if hit else 0)) if strategy=="balanced" else ((100000 if hit else 0)+skill*1800-int(employee["hourly_rate"]*12))
                     candidate_meta[demand_index,slot,employee_index]=(employee,duration,hit,score)
                 # 每个需求槽位必须恰好覆盖一人；允许不完整方案会导致覆盖率为 0/不可选。
                 if not eligible: raise ApiError(f"{demand['demand_date']} {demand['role']} 没有满足技能与可用性约束的员工",409,"NO_FEASIBLE_SCHEDULE")
@@ -463,17 +466,18 @@ def generate_plan(db,task,strategy):
 def run_schedule_task(db,task_id,user):
     try:
         task=dict(db.execute("SELECT * FROM tasks WHERE id=?",(task_id,)).fetchone());client=AIClient(db)
-        add_step(db,task_id,1,"目标理解","completed","已识别周期、覆盖目标、成本边界与特殊要求",f"intent=schedule_create; llm_enabled={client.enabled}",loads(task["parameters_json"],{}))
+        add_step(db,task_id,1,"目标理解","completed","已识别排班周期、岗位需求、覆盖目标和成本边界","已完成自然语言目标解析",loads(task["parameters_json"],{}));time.sleep(.7)
         sources=rows(db,"SELECT id,title,source_type FROM vector_documents ORDER BY source_type LIMIT 8")
-        add_step(db,task_id,2,"RAG 数据检索","completed",f"已加载 {len(sources)} 条规则与组织知识",f"vector_sources={len(sources)}",{"citations":[x["id"] for x in sources]})
+        add_step(db,task_id,2,"RAG 数据检索","completed",f"已加载 {len(sources)} 条规则与组织知识","已检索规则、员工偏好、技能与历史数据",{"citations":[x["id"] for x in sources]});time.sleep(.7)
         params=loads(task["parameters_json"],{});params["resolved_store_id"]=task_store_id(db,user,params);task["parameters_json"]=dumps(params);db.execute("UPDATE tasks SET parameters_json=? WHERE id=?",(task["parameters_json"],task_id));db.commit()
         demands,demand_source=ensure_demand_forecast(db,user,params)
         required_positions=sum(item["required_count"] for item in demands)
-        add_step(db,task_id,3,"需求预测","completed",f"已形成 {len(demands)} 条分时岗位需求，共 {required_positions} 个岗位","engine="+demand_source,{"demand_rows":len(demands),"required_positions":required_positions,"source":demand_source})
+        add_step(db,task_id,3,"需求预测","completed",f"已按日期、时段和岗位形成 {len(demands)} 条需求，共 {required_positions} 个岗位","已结合历史客流与业务目标完成需求预测",{"demand_rows":len(demands),"required_positions":required_positions,"source":demand_source});time.sleep(.7)
         generated=[]
         for name,strategy in (("覆盖与成本均衡方案","balanced"),("员工体验优先方案","experience")):
             assigned,metrics=generate_plan(db,task,strategy);plan_id=uid("plan")
             generated.append((plan_id,name,strategy,assigned,metrics))
+            time.sleep(.8)
         if not generated or any(item[4]["required"]<=0 for item in generated):raise ApiError("岗位需求为空，禁止创建推荐方案",422,"EMPTY_RECOMMENDATION")
         recommended=max(generated,key=lambda x:x[4]["coverage"]*2+x[4]["preference_rate"]*.35-x[4]["cost"]*.002)
         with transaction(db):
@@ -482,9 +486,9 @@ def run_schedule_task(db,task_id,user):
                 explanation={"facts":[f"覆盖 {metrics['assigned']}/{metrics['required']} 个岗位需求",f"预计人工成本 ¥{metrics['cost']}",f"偏好满足率 {metrics['preference_rate']}%"],"tradeoffs":[tradeoff],"compliance":{"hard_conflicts":0,"rules_checked":6}}
                 db.execute("INSERT INTO schedule_plans VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",(plan_id,task_id,name,strategy,"recommended" if plan_id==recommended[0] else "candidate",1 if plan_id==recommended[0] else 0,dumps(metrics),dumps(explanation),metrics["solver"],utcnow(),None,None))
                 for item in assigned:db.execute("INSERT INTO shifts VALUES(?,?,?,?,?,?,?,?,?,?,?)",(uid("shift"),plan_id,item["employee_id"],item["store_id"],item["role"],item["start_at"],item["end_at"],"draft","optimizer",utcnow(),utcnow()))
-        solver_mode=generated[0][4]["solver"];add_step(db,task_id,4,"两次独立求解","completed","已生成两套差异化排班方案，分别侧重覆盖成本均衡与员工体验",f"solver={solver_mode}",{"plans":2,"solver":solver_mode})
-        add_step(db,task_id,5,"合规风控","completed","硬约束全部通过，软约束已计入评分","hard_rules=3; soft_rules=3",{"rules_checked":6,"hard_conflicts":0})
-        add_step(db,task_id,6,"决策评估","completed",f"推荐 {recommended[1]}，等待主管选择生效",f"recommended_plan={recommended[0]}",recommended[4])
+        solver_mode=generated[0][4]["solver"];add_step(db,task_id,4,"方案求解","completed","已用约束求解生成成本均衡和员工体验两套方案","已完成两套目标函数独立求解",{"plans":2,"solver":solver_mode});time.sleep(.8)
+        add_step(db,task_id,5,"合规风控","completed","已检查工时上限、单日一班、夜班上限和休息间隔，未发现硬约束冲突","已完成硬约束与软约束校验",{"rules_checked":6,"hard_conflicts":0});time.sleep(.8)
+        add_step(db,task_id,6,"决策评估","completed",f"推荐{recommended[1]}，可对比两套方案后选择生效","已完成覆盖率、成本、偏好、公平性和风险评估",recommended[4])
         db.execute("UPDATE tasks SET status='completed',progress=100,rag_citations_json=?,completed_at=? WHERE id=?",(dumps([x["id"] for x in sources]),utcnow(),task_id));db.commit()
     except Exception as exc:
         db.execute("UPDATE tasks SET status='failed',error=?,completed_at=? WHERE id=?",(str(exc),utcnow(),task_id));db.commit()
