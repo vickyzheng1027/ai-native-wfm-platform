@@ -391,6 +391,7 @@ def generate_plan(db,task,strategy,avoid_employee_ids=None):
     templates=rows(db,"SELECT * FROM shift_templates WHERE status='active' ORDER BY start_time")
     if not templates:raise ApiError("当前没有启用的班次模板，无法生成排班方案",422,"SHIFT_TEMPLATE_REQUIRED")
     rules=rows(db,"SELECT * FROM rules WHERE status='active' AND (store_id IS NULL OR store_id=?)",(store_id,))
+    hard_rule_names={rule["name"] for rule in rules if rule["strength"]=="hard"}
     rule_limits={"weekly_hours":None,"night_shifts":None}
     for rule in rules:
         definition=loads(rule.get("definition_json"),{}) if isinstance(rule.get("definition_json"),str) else {}
@@ -408,7 +409,7 @@ def generate_plan(db,task,strategy,avoid_employee_ids=None):
         payload=loads(request["payload_json"],{});leave_date=payload.get("leave_date") or payload.get("start_date")
         if leave_date:unavailable.add((request["employee_id"],leave_date))
     assigned=[];hours={};weekly_hours={};preference_hits=0;required=sum(x["required_count"] for x in demands)
-    if False and cp_model and demands:
+    if cp_model and demands:
         model=cp_model.CpModel();variables={};candidate_meta={}
         for demand_index,demand in enumerate(demands):
             duration=(datetime.fromisoformat(demand["demand_date"]+"T"+demand["end_time"])-datetime.fromisoformat(demand["demand_date"]+"T"+demand["start_time"])).seconds/3600
@@ -443,15 +444,18 @@ def generate_plan(db,task,strategy,avoid_employee_ids=None):
             by_date={}
             for (demand_index,slot,index),variable in variables.items():
                 if index==employee_index:by_date.setdefault(demands[demand_index]["demand_date"],[]).append(variable)
-            for day_vars in by_date.values():model.Add(sum(day_vars)<=1)
+            if "单日一班" in hard_rule_names:
+                for day_vars in by_date.values():model.Add(sum(day_vars)<=1)
             by_week={}
             for key,variable in variables.items():
                 if key[2]==employee_index:by_week.setdefault(schedule_week(demands[key[0]]["demand_date"]),[]).append(int(candidate_meta[key][1]*10)*variable)
-            weekly_limit=min(float(employee["weekly_hour_limit"]),rule_limits["weekly_hours"] or float(employee["weekly_hour_limit"]))
-            for weighted in by_week.values():model.Add(sum(weighted)<=int(weekly_limit*10))
+            if "周工时上限" in hard_rule_names or rule_limits["weekly_hours"]:
+                weekly_limit=min(float(employee["weekly_hour_limit"]),rule_limits["weekly_hours"] or float(employee["weekly_hour_limit"]))
+                for weighted in by_week.values():model.Add(sum(weighted)<=int(weekly_limit*10))
             night_variables=[variable for key,variable in variables.items() if key[2]==employee_index and demands[key[0]]["end_time"]>="22:00"]
-            night_limit=min(int(employee["night_shift_limit"]),int(rule_limits["night_shifts"] or employee["night_shift_limit"]))
-            if night_variables:model.Add(sum(night_variables)<=night_limit)
+            if night_variables and ("夜班上限" in hard_rule_names or rule_limits["night_shifts"]):
+                night_limit=min(int(employee["night_shift_limit"]),int(rule_limits["night_shifts"] or employee["night_shift_limit"]))
+                model.Add(sum(night_variables)<=night_limit)
         model.Maximize(sum(candidate_meta[key][3]*variable for key,variable in variables.items()))
         solver=cp_model.CpSolver();solver.parameters.max_time_in_seconds=float(os.getenv("WFM_SOLVER_TIMEOUT_SECONDS","2"));solver.parameters.num_search_workers=min(8,os.cpu_count() or 2);status=solver.Solve(model)
         if status not in (cp_model.OPTIMAL,cp_model.FEASIBLE):raise ApiError("CP-SAT 在当前硬约束下无解",409,"NO_FEASIBLE_SCHEDULE")
