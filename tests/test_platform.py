@@ -401,10 +401,22 @@ class FlowStaffTests(unittest.TestCase):
     def test_anomalies_are_recomputed_from_attendance(self):
         events=anomalies(self.db,self.manager)
         overtime=next(event for event in events if event["anomaly_type"]=="continuous_overtime")
-        self.assertIn("近7天加班12.0小时",overtime["evidence"])
+        self.assertIn("近7天有4天加班",overtime["evidence"])
+        self.assertIn("最长连续加班4天",overtime["evidence"])
+        self.assertIn("近7天累计加班12.0小时",overtime["evidence"])
         self.db.execute("DELETE FROM attendance WHERE employee_id='emp-003' AND event_type='overtime'")
         self.db.commit()
         self.assertFalse(any(event["employee_id"]=="emp-003" and event["anomaly_type"]=="continuous_overtime" for event in anomalies(self.db,self.manager)))
+
+    def test_non_consecutive_overtime_is_not_reported_as_consecutive(self):
+        self.db.execute("DELETE FROM attendance WHERE employee_id='emp-003'")
+        for index,(day,event_type,hours) in enumerate((("2026-08-01","overtime",3),("2026-08-02","overtime",3),("2026-08-03","leave",0),("2026-08-04","overtime",3))):
+            self.db.execute("INSERT INTO attendance VALUES(?,?,?,?,?,?,?,?,?)",(f"actual-{index}","emp-003",day,event_type,f"{day}T09:00:00+00:00",hours,"test",'{}',f"{day}T09:00:00+00:00"))
+        self.db.commit()
+        overtime=next(event for event in anomalies(self.db,self.manager) if event["employee_id"]=="emp-003" and event["anomaly_type"]=="continuous_overtime")
+        self.assertIn("近7天有3天加班",overtime["evidence"])
+        self.assertIn("最长连续加班2天",overtime["evidence"])
+        self.assertNotIn("最长连续加班3天",overtime["evidence"])
 
     def test_anomaly_action_requires_note_and_is_audited(self):
         event=anomalies(self.db,self.manager)[0]

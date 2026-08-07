@@ -604,7 +604,7 @@ def refresh_attendance_anomalies(db):
         for offset in range(7):
             day=(reference-timedelta(days=6-offset)).isoformat();streak=streak+1 if day in overtime_dates else 0;max_streak=max(max_streak,streak)
         if max_streak>=3 or overtime_hours>=8:
-            detected[(employee["id"],"continuous_overtime")]={"risk":"high" if max_streak>=4 or overtime_hours>=12 else "medium","confidence":min(.98,.76+max_streak*.04+overtime_hours/200),"evidence":[f"连续加班最长{max_streak}天",f"近7天加班{overtime_hours}小时"],"impact":"持续加班可能增加疲劳和出勤波动风险","causes":["业务高峰或临时缺员可能增加了工时，需结合排班核实","关键技能可能集中在少数员工"],"suggestions":["检查后续班次和最小休息间隔","评估增加替补或分散技能覆盖"]}
+            detected[(employee["id"],"continuous_overtime")]={"risk":"high" if max_streak>=4 or overtime_hours>=12 else "medium","confidence":min(.98,.76+max_streak*.04+overtime_hours/200),"evidence":[f"近7天有{len(overtime)}天加班",f"最长连续加班{max_streak}天",f"近7天累计加班{overtime_hours}小时"],"impact":"持续加班可能增加疲劳和出勤波动风险","causes":["业务高峰或临时缺员可能增加了工时，需结合排班核实","关键技能可能集中在少数员工"],"suggestions":["检查后续班次和最小休息间隔","评估增加替补或分散技能覆盖"]}
         recent_leave=sum(item["event_type"]=="leave" and item["event_date"]>=recent28 for item in records);previous_leave=sum(item["event_type"]=="leave" and previous28_start<=item["event_date"]<=previous28_end for item in records)
         if recent_leave>=3 and recent_leave>=max(2,previous_leave*2):
             detected[(employee["id"],"leave_increase")]={"risk":"low","confidence":min(.9,.62+recent_leave*.05),"evidence":[f"近28天请假{recent_leave}次",f"前一周期请假{previous_leave}次"],"impact":"班表稳定性可能需要额外关注","causes":["请假变化涉及员工隐私，具体原因必须由员工自愿说明"],"suggestions":["仅核实后续可用时间，不推断健康或家庭状况","必要时准备替补覆盖"]}
