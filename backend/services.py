@@ -639,7 +639,7 @@ def parse_swap_request(db,user,text,model_params=None):
     if not swap_date:raise ApiError("请告诉我需要换班的具体日期",422,"SWAP_DATE_REQUIRED")
     own=db.execute("SELECT * FROM shifts WHERE employee_id=? AND status='published' AND date(start_at)=? ORDER BY start_at LIMIT 1",(user["employee_id"],swap_date)).fetchone()
     if not own:raise ApiError(f"你在 {swap_date} 没有已发布班次，无法发起换班",409,"SHIFT_NOT_FOUND")
-    candidates=rows(db,"SELECT sh.id shift_id,sh.employee_id,e.name employee_name,e.code employee_code,e.role,sh.start_at,sh.end_at FROM shifts sh JOIN employees e ON e.id=sh.employee_id WHERE sh.status='published' AND sh.store_id=? AND date(sh.start_at)=? AND sh.employee_id<>? ORDER BY e.code",(own["store_id"],swap_date,user["employee_id"]))
+    candidates=rows(db,"SELECT sh.id shift_id,sh.employee_id,e.name employee_name,e.code employee_code,e.role,sh.start_at,sh.end_at FROM shifts sh JOIN employees e ON e.id=sh.employee_id WHERE sh.status='published' AND sh.plan_id=? AND sh.store_id=? AND date(sh.start_at)=? AND sh.employee_id<>? ORDER BY e.code",(own["plan_id"],own["store_id"],swap_date,user["employee_id"]))
     if not candidates:raise ApiError(f"{swap_date} 当前没有可交换班次的同门店员工",409,"NO_SWAP_CANDIDATES")
     payload={"swap_date":swap_date,"shift_id":own["id"],"own_start_at":own["start_at"],"own_end_at":own["end_at"],"candidates":candidates}
     analysis={"facts":[f"你的班次：{own['start_at'][11:16]}–{own['end_at'][11:16]}",f"找到 {len(candidates)} 名同门店可换班员工"],"suggestion":"请选择一名员工并确认提交，主管审批前不会改变班表。"}
@@ -851,6 +851,7 @@ def decide_employee_request(db,user,request_id,status,note=""):
         elif status=="approved" and request["request_type"]=="swap":
             own_shift=db.execute("SELECT * FROM shifts WHERE id=? AND employee_id=? AND status='published'",(request["shift_id"],request["employee_id"])).fetchone();peer_shift=db.execute("SELECT * FROM shifts WHERE id=? AND employee_id=? AND status='published'",(payload.get("peer_shift_id"),payload.get("peer_employee_id"))).fetchone()
             if not own_shift or not peer_shift:raise ApiError("换班涉及的已发布班次已发生变化，请重新申请",409,"SWAP_SHIFT_CHANGED")
+            if own_shift["plan_id"]!=peer_shift["plan_id"] or own_shift["store_id"]!=peer_shift["store_id"] or own_shift["start_at"][:10]!=peer_shift["start_at"][:10]:raise ApiError("只能交换同一门店同一天同一张正式班表的班次",409,"SWAP_SCOPE_INVALID")
             db.execute("UPDATE shifts SET employee_id=?,source='approved_swap',updated_at=? WHERE id=?",(peer_shift["employee_id"],decided_at,own_shift["id"]));db.execute("UPDATE shifts SET employee_id=?,source='approved_swap',updated_at=? WHERE id=?",(own_shift["employee_id"],decided_at,peer_shift["id"]))
             for employee_id in (own_shift["employee_id"],peer_shift["employee_id"]):db.execute("INSERT INTO employee_notifications VALUES(?,?,?,?,?,?,?,?,?)",(uid("notification"),employee_id,"swap_approved","换班申请已批准",f"{payload.get('swap_date')} 的班次已完成交换，请查看最新班表。",request_id,"unread",decided_at,None))
         elif status=="rejected":
