@@ -39,7 +39,9 @@ class FlowStaffTests(unittest.TestCase):
         for employee in self.db.execute("SELECT id,weekly_hour_limit FROM employees").fetchall():
             shifts=self.db.execute("SELECT start_at,end_at FROM shifts WHERE plan_id='plan-seed-august-1-6' AND employee_id=?",(employee["id"],)).fetchall()
             hours=sum((date.fromisoformat(item["end_at"][:10])-date.fromisoformat(item["start_at"][:10])).days*0+(int(item["end_at"][11:13])-int(item["start_at"][11:13])) for item in shifts if item["start_at"][11:16]!=item["end_at"][11:16])
-            self.assertLessEqual(hours,employee["weekly_hour_limit"])
+            for week_start,week_end in (("2026-08-01","2026-08-02"),("2026-08-03","2026-08-09")):
+                week_hours=sum((int(item["end_at"][11:13])-int(item["start_at"][11:13])) for item in shifts if week_start<=item["start_at"][:10]<=week_end and item["start_at"][11:16]!=item["end_at"][11:16])
+                self.assertLessEqual(week_hours,employee["weekly_hour_limit"])
             self.assertGreaterEqual(sum(item["start_at"][11:16]==item["end_at"][11:16] for item in shifts),1)
         leave_conflicts=self.db.execute("SELECT COUNT(*) n FROM attendance a JOIN shifts s ON s.employee_id=a.employee_id AND date(s.start_at)=a.event_date WHERE a.source='seeded_leave' AND s.plan_id='plan-seed-august-1-6' AND time(s.start_at)<>time(s.end_at)").fetchone()["n"]
         self.assertEqual(leave_conflicts,0)
