@@ -33,8 +33,9 @@ class FlowStaffTests(unittest.TestCase):
         self.assertEqual(self.db.execute("SELECT COUNT(*) n FROM rules").fetchone()["n"],6)
         self.assertEqual(self.db.execute("SELECT COUNT(*) n FROM shift_templates").fetchone()["n"],4)
         self.assertEqual(self.db.execute("SELECT COUNT(*) n FROM shifts WHERE plan_id='plan-seed-august-1-6'").fetchone()["n"],32*6)
-        self.assertGreaterEqual(self.db.execute("SELECT COUNT(*) n FROM attendance WHERE event_type='leave'").fetchone()["n"],6)
+        self.assertGreaterEqual(self.db.execute("SELECT COUNT(*) n FROM attendance WHERE event_type='leave'").fetchone()["n"],3)
         self.assertGreaterEqual(self.db.execute("SELECT COUNT(*) n FROM attendance WHERE event_type='overtime'").fetchone()["n"],6)
+        self.assertEqual(self.db.execute("SELECT COUNT(*) n FROM (SELECT employee_id,event_date,COUNT(*) c FROM attendance WHERE event_date BETWEEN '2026-08-01' AND '2026-08-07' GROUP BY employee_id,event_date HAVING c>1)").fetchone()["n"],0)
         for employee in self.db.execute("SELECT id,weekly_hour_limit FROM employees").fetchall():
             shifts=self.db.execute("SELECT start_at,end_at FROM shifts WHERE plan_id='plan-seed-august-1-6' AND employee_id=?",(employee["id"],)).fetchall()
             hours=sum((date.fromisoformat(item["end_at"][:10])-date.fromisoformat(item["start_at"][:10])).days*0+(int(item["end_at"][11:13])-int(item["start_at"][11:13])) for item in shifts if item["start_at"][11:16]!=item["end_at"][11:16])
@@ -144,6 +145,13 @@ class FlowStaffTests(unittest.TestCase):
         expected=sum(x["event_type"] in ("late","absence") for x in result["records"])
         self.assertEqual(result["summary"]["exceptions"],expected)
         self.assertGreater(result["summary"]["overtime_hours"],0)
+
+    def test_attendance_query_filters_by_name_and_code(self):
+        result=attendance_overview(self.db,self.manager,"2026-08-01","2026-08-07",name="李敏")
+        self.assertEqual([item["name"] for item in result["employees"]],["李敏"])
+        self.assertTrue(all("2026-08-01" <= item["event_date"] <= "2026-08-07" for item in result["records"]))
+        result=attendance_overview(self.db,self.manager,"2026-08-01","2026-08-07",code="FS003")
+        self.assertEqual(len(result["employees"]),1)
 
     def test_intent_fallback_is_explicit_when_key_missing(self):
         result=classify_intent(AIClient(self.db),self.manager,"请帮我安排8月8日排班")
@@ -400,10 +408,10 @@ class FlowStaffTests(unittest.TestCase):
 
     def test_anomalies_are_recomputed_from_attendance(self):
         events=anomalies(self.db,self.manager)
-        overtime=next(event for event in events if event["anomaly_type"]=="continuous_overtime")
-        self.assertIn("近7天有4天加班",overtime["evidence"])
-        self.assertIn("最长连续加班4天",overtime["evidence"])
-        self.assertIn("近7天累计加班12.0小时",overtime["evidence"])
+        overtime=next(event for event in events if event["employee_id"]=="emp-004" and event["anomaly_type"]=="continuous_overtime")
+        self.assertIn("近7天有3天加班",overtime["evidence"])
+        self.assertIn("最长连续加班3天",overtime["evidence"])
+        self.assertIn("近7天累计加班9.0小时",overtime["evidence"])
         self.db.execute("DELETE FROM attendance WHERE employee_id='emp-003' AND event_type='overtime'")
         self.db.commit()
         self.assertFalse(any(event["employee_id"]=="emp-003" and event["anomaly_type"]=="continuous_overtime" for event in anomalies(self.db,self.manager)))
@@ -417,6 +425,14 @@ class FlowStaffTests(unittest.TestCase):
         self.assertIn("近7天有3天加班",overtime["evidence"])
         self.assertIn("最长连续加班2天",overtime["evidence"])
         self.assertNotIn("最长连续加班3天",overtime["evidence"])
+
+    def test_seeded_li_min_evidence_matches_attendance_matrix(self):
+        overtime=next(event for event in anomalies(self.db,self.manager) if event["employee_id"]=="emp-003" and event["anomaly_type"]=="continuous_overtime")
+        self.assertEqual(overtime["evidence"],["近7天有3天加班","最长连续加班1天","近7天累计加班9.0小时"])
+
+    def test_seeded_attendance_covers_every_active_anomaly_type(self):
+        events=anomalies(self.db,{**self.manager,"store_id":None,"role":"admin"})
+        self.assertTrue({"continuous_overtime","repeated_late","leave_increase"}.issubset({event["anomaly_type"] for event in events}))
 
     def test_anomaly_action_requires_note_and_is_audited(self):
         event=anomalies(self.db,self.manager)[0]

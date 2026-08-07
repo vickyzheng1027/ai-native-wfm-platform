@@ -97,8 +97,11 @@ def save_employee(db,user,body,employee_id=None):
     return next(x for x in employee_list(db,{**user,"role":"admin","store_id":None}) if x["id"]==employee_id)
 
 
-def attendance_overview(db,user,start,end):
-    employees=employee_list(db,user);ids=[x["id"] for x in employees]
+def attendance_overview(db,user,start,end,name="",code=""):
+    employees=employee_list(db,user)
+    if name:employees=[item for item in employees if name.lower() in item["name"].lower()]
+    if code:employees=[item for item in employees if code.lower() in item["code"].lower()]
+    ids=[x["id"] for x in employees]
     data=rows(db,f"SELECT * FROM attendance WHERE event_date BETWEEN ? AND ? AND employee_id IN ({','.join('?' for _ in ids)}) ORDER BY event_date" if ids else "SELECT * FROM attendance WHERE 0",(start,end,*ids) if ids else ())
     normal=sum(x["event_type"] in ("normal","late") for x in data);expected=sum(x["event_type"] not in ("leave","overtime") for x in data);exceptions=sum(x["event_type"] in ("late","absence") for x in data)
     balances=rows(db,f"SELECT * FROM leave_balances WHERE employee_id IN ({','.join('?' for _ in ids)}) ORDER BY employee_id,leave_type" if ids else "SELECT * FROM leave_balances WHERE 0",ids)
@@ -595,17 +598,21 @@ def refresh_attendance_anomalies(db):
     for employee in employees:
         records=rows(db,"SELECT * FROM attendance WHERE employee_id=? AND event_date BETWEEN ? AND ? ORDER BY event_date",(employee["id"],previous28_start,latest))
         week=[item for item in records if item["event_date"]>=recent7]
-        late=[item for item in week if item["event_type"]=="late"]
-        late_minutes=sum(int(loads(item["metadata_json"],{}).get("late_minutes") or item["event_time"][14:16] or 0) for item in late)
-        if len(late)>=3 or late_minutes>=30:
-            detected[(employee["id"],"repeated_late")]={"risk":"high" if len(late)>=4 or late_minutes>=45 else "medium","confidence":min(.98,.72+len(late)*.05+late_minutes/500),"evidence":[f"近7天迟到{len(late)}次",f"累计迟到{late_minutes}分钟"],"impact":"可能影响开店准备、交接和高峰时段岗位覆盖","causes":["通勤或个人安排可能发生变化，需与员工核实","当前班次与员工可用时间可能不匹配"],"suggestions":["先与员工进行非惩罚性沟通","核实后评估班次调整或到岗提醒"]}
-        overtime=[item for item in week if item["event_type"]=="overtime"]
-        overtime_hours=round(sum(float(item["hours"] or 0) for item in overtime),1);overtime_dates={item["event_date"] for item in overtime};streak=0;max_streak=0
+        late_by_date={}
+        for item in week:
+            if item["event_type"]=="late":late_by_date[item["event_date"]]=max(late_by_date.get(item["event_date"],0),int(loads(item["metadata_json"],{}).get("late_minutes") or item["event_time"][14:16] or 0))
+        late_count=len(late_by_date);late_minutes=sum(late_by_date.values())
+        if late_count>=3 or late_minutes>=30:
+            detected[(employee["id"],"repeated_late")]={"risk":"high" if late_count>=4 or late_minutes>=45 else "medium","confidence":min(.98,.72+late_count*.05+late_minutes/500),"evidence":[f"近7天迟到{late_count}次",f"累计迟到{late_minutes}分钟"],"impact":"可能影响开店准备、交接和高峰时段岗位覆盖","causes":["通勤或个人安排可能发生变化，需与员工核实","当前班次与员工可用时间可能不匹配"],"suggestions":["先与员工进行非惩罚性沟通","核实后评估班次调整或到岗提醒"]}
+        overtime_by_date={}
+        for item in week:
+            if item["event_type"]=="overtime":overtime_by_date[item["event_date"]]=overtime_by_date.get(item["event_date"],0)+float(item["hours"] or 0)
+        overtime_hours=round(sum(overtime_by_date.values()),1);overtime_dates=set(overtime_by_date);streak=0;max_streak=0
         for offset in range(7):
             day=(reference-timedelta(days=6-offset)).isoformat();streak=streak+1 if day in overtime_dates else 0;max_streak=max(max_streak,streak)
         if max_streak>=3 or overtime_hours>=8:
-            detected[(employee["id"],"continuous_overtime")]={"risk":"high" if max_streak>=4 or overtime_hours>=12 else "medium","confidence":min(.98,.76+max_streak*.04+overtime_hours/200),"evidence":[f"近7天有{len(overtime)}天加班",f"最长连续加班{max_streak}天",f"近7天累计加班{overtime_hours}小时"],"impact":"持续加班可能增加疲劳和出勤波动风险","causes":["业务高峰或临时缺员可能增加了工时，需结合排班核实","关键技能可能集中在少数员工"],"suggestions":["检查后续班次和最小休息间隔","评估增加替补或分散技能覆盖"]}
-        recent_leave=sum(item["event_type"]=="leave" and item["event_date"]>=recent28 for item in records);previous_leave=sum(item["event_type"]=="leave" and previous28_start<=item["event_date"]<=previous28_end for item in records)
+            detected[(employee["id"],"continuous_overtime")]={"risk":"high" if max_streak>=4 or overtime_hours>=12 else "medium","confidence":min(.98,.76+max_streak*.04+overtime_hours/200),"evidence":[f"近7天有{len(overtime_dates)}天加班",f"最长连续加班{max_streak}天",f"近7天累计加班{overtime_hours}小时"],"impact":"持续加班可能增加疲劳和出勤波动风险","causes":["业务高峰或临时缺员可能增加了工时，需结合排班核实","关键技能可能集中在少数员工"],"suggestions":["检查后续班次和最小休息间隔","评估增加替补或分散技能覆盖"]}
+        recent_leave=len({item["event_date"] for item in records if item["event_type"]=="leave" and item["event_date"]>=recent28});previous_leave=len({item["event_date"] for item in records if item["event_type"]=="leave" and previous28_start<=item["event_date"]<=previous28_end})
         if recent_leave>=3 and recent_leave>=max(2,previous_leave*2):
             detected[(employee["id"],"leave_increase")]={"risk":"low","confidence":min(.9,.62+recent_leave*.05),"evidence":[f"近28天请假{recent_leave}次",f"前一周期请假{previous_leave}次"],"impact":"班表稳定性可能需要额外关注","causes":["请假变化涉及员工隐私，具体原因必须由员工自愿说明"],"suggestions":["仅核实后续可用时间，不推断健康或家庭状况","必要时准备替补覆盖"]}
     now=utcnow()

@@ -261,6 +261,9 @@
 .possible-cause small { color: #92400e; }
 .anomaly-action { display: grid; gap: 13px; margin-top: 18px; padding-top: 16px; border-top: 1px solid #e5e7eb; }
 @media (max-width: 900px) { .anomaly-scope { grid-template-columns: 1fr; } }
+.attendance-filter { display: grid; grid-template-columns: minmax(180px, 260px) minmax(180px, 260px) auto auto; gap: 12px; align-items: end; margin-bottom: 18px; padding: 16px 18px; }
+.attendance-filter label { display: grid; gap: 6px; color: #475569; font-size: 12px; font-weight: 650; }
+@media (max-width: 760px) { .attendance-filter { grid-template-columns: 1fr 1fr; } }
 
 @media (max-width: 620px) {
   .workbench-greeting {

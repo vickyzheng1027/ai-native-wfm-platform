@@ -186,6 +186,25 @@ def seed_demo_operations(db):
         leave_date=f"2026-08-{index+1:02d}";db.execute("INSERT OR IGNORE INTO attendance VALUES(?,?,?,?,?,?,?,?,?)",(f"att-demo-leave-{employee['id']}",employee["id"],leave_date,"leave",f"{leave_date}T09:00:00+00:00",0,"seeded_leave",dumps({"leave_type":"年假","demo":True}),now))
     for index,employee in enumerate(employees[6:12]):
         overtime_date=f"2026-08-{index+1:02d}";db.execute("INSERT OR IGNORE INTO attendance VALUES(?,?,?,?,?,?,?,?,?)",(f"att-demo-overtime-{employee['id']}",employee["id"],overtime_date,"overtime",f"{overtime_date}T20:30:00+00:00",2,"seeded_overtime",dumps({"approved":True,"demo":True}),now))
+    attendance_version=db.execute("SELECT value FROM meta WHERE key='demo_attendance_version'").fetchone()
+    if not attendance_version or attendance_version["value"]!="2":
+        db.execute("DELETE FROM attendance WHERE event_date BETWEEN '2026-08-01' AND '2026-08-07' AND source IN ('seeded_hris','seeded_leave','seeded_overtime')")
+        fixtures={
+            "emp-003":{2:("overtime",3),4:("overtime",3),6:("overtime",3)},
+            "emp-004":{1:("overtime",3),2:("overtime",3),3:("overtime",3)},
+            "emp-005":{1:("late",13),3:("late",15),5:("late",17)},
+            "emp-007":{2:("leave",0),4:("leave",0),6:("leave",0)},
+            "emp-008":{4:("absence",0),5:("absence",0)},
+        }
+        for employee in employees:
+            for day in range(1,8):
+                event_type,value=fixtures.get(employee["id"],{}).get(day,("normal",0));hours=value if event_type=="overtime" else 0;metadata={"verified":True,"demo_fixture":True}
+                if event_type=="late":metadata["late_minutes"]=value
+                event_date=f"2026-08-{day:02d}";minute=value if event_type=="late" else 0
+                db.execute("INSERT INTO attendance VALUES(?,?,?,?,?,?,?,?,?)",(f"att-fixture-{employee['id']}-{day}",employee["id"],event_date,event_type,f"{event_date}T09:{minute:02d}:00+00:00",hours,"seeded_hris",dumps(metadata),now))
+        db.execute("DELETE FROM attendance WHERE employee_id='emp-007' AND event_date BETWEEN '2026-07-04' AND '2026-07-31'")
+        db.execute("INSERT INTO attendance VALUES(?,?,?,?,?,?,?,?,?)",("att-fixture-emp-007-prior","emp-007","2026-07-10","normal","2026-07-10T09:00:00+00:00",0,"seeded_hris",dumps({"verified":True,"demo_fixture":True}),now))
+        db.execute("INSERT OR REPLACE INTO meta VALUES('demo_attendance_version','2')")
 
 
 def seed(db):
@@ -236,12 +255,15 @@ def seed(db):
             state=states[(day+idx)%len(states)]
             hours=2 if state=="overtime" else 0
             metadata={"verified":True}
-            if employee[0]=="emp-003" and day<=4:state,hours="overtime",3
-            if employee[0]=="emp-004" and day in (1,3,5):state,metadata="late",{"verified":True,"late_minutes":12+day}
+            if employee[0]=="emp-003" and day in (2,4,6):state,hours="overtime",3
+            if employee[0]=="emp-004" and day in (1,2,3):state,hours="overtime",3
+            if employee[0]=="emp-005" and day in (1,3,5):state,metadata="late",{"verified":True,"late_minutes":12+day}
             if employee[0]=="emp-007" and day in (2,4,6):state="leave"
             minute=metadata.get("late_minutes",(idx*3)%20) if state=="late" else (idx*3)%20
             attendance.append((f"att-{day}-{idx}",employee[0],f"2026-08-{day:02d}",state,f"2026-08-{day:02d}T09:{minute:02d}:00+00:00",hours,"seeded_hris",dumps(metadata),now))
     db.executemany("INSERT INTO attendance VALUES(?,?,?,?,?,?,?,?,?)",attendance)
+    prior_leave=[("att-prior-1","emp-007","2026-07-10","normal","2026-07-10T09:00:00+00:00",0,"seeded_hris",dumps({"verified":True}),now)]
+    db.executemany("INSERT INTO attendance VALUES(?,?,?,?,?,?,?,?,?)",prior_leave)
     leave_types=[("年假",10,3,1),("病假",8,1,0),("事假",5,1,0),("调休",12,4,2)]
     db.executemany("INSERT INTO leave_balances VALUES(?,?,?,?,?,?,?)",[(f"lb-{e[0]}-{i}",e[0],2026,t,*v) for e in employees for i,(t,*v) in enumerate(leave_types)])
     anomalies=[

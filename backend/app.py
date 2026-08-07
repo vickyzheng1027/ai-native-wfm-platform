@@ -122,7 +122,7 @@ class Handler(BaseHTTPRequestHandler):
         match=self.match(path,"/api/organization/employees/{id}")
         if method=="PUT" and match:return 200,{"ok":True,"data":save_employee(DB,user,self.body(),match["id"])}
         if method=="GET" and path=="/api/attendance/overview":
-            start,end=business_month_period();return 200,{"ok":True,"data":attendance_overview(DB,user,query.get("start",[start])[0],query.get("end",[end])[0])}
+            start,end="2026-08-01","2026-08-07";return 200,{"ok":True,"data":attendance_overview(DB,user,query.get("start",[start])[0],query.get("end",[end])[0],query.get("name",[""])[0],query.get("code",[""])[0])}
         if method=="GET" and path=="/api/anomalies":return 200,{"ok":True,"data":anomalies(DB,user)}
         match=self.match(path,"/api/anomalies/{id}/status")
         if method=="POST" and match:
