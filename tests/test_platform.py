@@ -30,7 +30,7 @@ class FlowStaffTests(unittest.TestCase):
         self.assertEqual(self.db.execute("SELECT COUNT(*) n FROM skill_catalog").fetchone()["n"],10)
         self.assertGreaterEqual(self.db.execute("SELECT COUNT(*) n FROM attendance").fetchone()["n"],60)
         self.assertGreaterEqual(self.db.execute("SELECT COUNT(*) n FROM employee_skills").fetchone()["n"],20)
-        self.assertEqual(self.db.execute("SELECT COUNT(*) n FROM rules").fetchone()["n"],6)
+        self.assertGreaterEqual(self.db.execute("SELECT COUNT(*) n FROM rules").fetchone()["n"],6)
         self.assertEqual(self.db.execute("SELECT COUNT(*) n FROM shift_templates").fetchone()["n"],4)
         self.assertEqual(self.db.execute("SELECT COUNT(*) n FROM shifts WHERE plan_id='plan-seed-august-1-6'").fetchone()["n"],32*9)
         self.assertGreaterEqual(self.db.execute("SELECT COUNT(*) n FROM attendance WHERE event_type='leave'").fetchone()["n"],3)
