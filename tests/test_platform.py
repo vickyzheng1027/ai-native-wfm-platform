@@ -153,6 +153,15 @@ class FlowStaffTests(unittest.TestCase):
         result=attendance_overview(self.db,self.manager,"2026-08-01","2026-08-07",code="FS003")
         self.assertEqual(len(result["employees"]),1)
 
+    def test_attendance_daily_summary_aggregates_multiple_codes(self):
+        self.db.execute("INSERT INTO attendance VALUES(?,?,?,?,?,?,?,?,?)",("multi-code","emp-003","2026-08-02","late","2026-08-02T09:15:00+00:00",0,"test",'{"late_minutes":15,"attendance_hours":7.5}',"2026-08-02T09:15:00+00:00"))
+        self.db.commit()
+        result=attendance_overview(self.db,self.manager,"2026-08-02","2026-08-02",code="FS003")
+        daily=result["daily_summary"][0]
+        self.assertEqual(daily["late_count"],1)
+        self.assertEqual(daily["overtime_hours"],3.0)
+        self.assertEqual(daily["attendance_hours"],7.5)
+
     def test_intent_fallback_is_explicit_when_key_missing(self):
         result=classify_intent(AIClient(self.db),self.manager,"请帮我安排8月8日排班")
         self.assertEqual(result["mode"],"deterministic_fallback")

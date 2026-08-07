@@ -104,13 +104,25 @@ def attendance_overview(db,user,start,end,name="",code=""):
     ids=[x["id"] for x in employees]
     data=rows(db,f"SELECT * FROM attendance WHERE event_date BETWEEN ? AND ? AND employee_id IN ({','.join('?' for _ in ids)}) ORDER BY event_date" if ids else "SELECT * FROM attendance WHERE 0",(start,end,*ids) if ids else ())
     normal=sum(x["event_type"] in ("normal","late") for x in data);expected=sum(x["event_type"] not in ("leave","overtime") for x in data);exceptions=sum(x["event_type"] in ("late","absence") for x in data)
+    daily={}
+    for item in data:
+        key=(item["employee_id"],item["event_date"]);summary=daily.setdefault(key,{"employee_id":item["employee_id"],"event_date":item["event_date"],"attendance_hours":0.0,"leave_hours":0.0,"late_count":0,"overtime_hours":0.0,"codes":[]})
+        event=item["event_type"];hours=float(item["hours"] or 0);metadata=loads(item.get("metadata_json"),{})
+        if event in ("normal","late"):summary["attendance_hours"]+=hours or float(metadata.get("attendance_hours",8))
+        elif event=="leave":summary["leave_hours"]+=hours or float(metadata.get("leave_hours",8))
+        if event=="late":summary["late_count"]+=1
+        if event=="overtime":summary["overtime_hours"]+=hours
+        if event not in summary["codes"]:summary["codes"].append(event)
+    daily_summary=list(daily.values())
+    for summary in daily_summary:
+        for key in ("attendance_hours","leave_hours","overtime_hours"):summary[key]=round(summary[key],1)
     balances=rows(db,f"SELECT * FROM leave_balances WHERE employee_id IN ({','.join('?' for _ in ids)}) ORDER BY employee_id,leave_type" if ids else "SELECT * FROM leave_balances WHERE 0",ids)
     approvals=[]
     if user["role"] in ("admin","manager","hr"):
         sql="SELECT r.*,e.name employee_name,e.code employee_code,e.store_id FROM employee_requests r JOIN employees e ON e.id=r.employee_id WHERE r.status='pending_manager'";args=[]
         if user["role"]=="manager":sql+=" AND e.store_id=?";args.append(user.get("store_id"))
         approvals=[{**item,"payload":loads(item.pop("payload_json"),{}),"analysis":loads(item.pop("agent_analysis_json"),{})} for item in rows(db,sql+" ORDER BY r.created_at",args)]
-    return {"employees":[{"id":x["id"],"name":x["name"],"code":x["code"],"role":x["role"]} for x in employees],"records":data,"balances":balances,"approval_requests":approvals,"summary":{"attendance_rate":round(normal/expected*100,1) if expected else 0,"exceptions":exceptions,"leave_records":sum(x["event_type"]=="leave" for x in data),"overtime_hours":sum(x["hours"] or 0 for x in data if x["event_type"]=="overtime")}}
+    return {"employees":[{"id":x["id"],"name":x["name"],"code":x["code"],"role":x["role"]} for x in employees],"records":data,"daily_summary":daily_summary,"balances":balances,"approval_requests":approvals,"summary":{"attendance_rate":round(normal/expected*100,1) if expected else 0,"exceptions":exceptions,"leave_records":sum(x["event_type"]=="leave" for x in data),"overtime_hours":sum(x["hours"] or 0 for x in data if x["event_type"]=="overtime")}}
 
 
 def business_today():
