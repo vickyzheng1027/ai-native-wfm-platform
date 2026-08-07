@@ -404,6 +404,14 @@ def generate_plan(db,task,strategy,avoid_employee_ids=None):
     employees=[employee for employee in employee_list(db,{"role":"admin","store_id":None}) if employee["store_id"]==store_id and employee["status"]=="active"]
     avoid_employee_ids=set(avoid_employee_ids or ())
     template_by_time={(item["start_time"],item["end_time"]):item for item in templates if item["shift_type"]!="rest"}
+    # 需求预测只提供业务时段，最终排班时间必须来自启用的班次模板。
+    for demand in demands:
+        exact=template_by_time.get((demand["start_time"],demand["end_time"]))
+        if not exact:
+            def distance(item):
+                return abs(int(item["start_time"][:2])*60+int(item["start_time"][3:])-int(demand["start_time"][:2])*60-int(demand["start_time"][3:]))
+            nearest=min([item for item in templates if item["shift_type"]!="rest"],key=distance)
+            demand["start_time"],demand["end_time"]=nearest["start_time"],nearest["end_time"]
     unavailable={(item["employee_id"],item["event_date"]) for item in rows(db,"SELECT employee_id,event_date FROM attendance WHERE event_date BETWEEN ? AND ? AND event_type IN ('leave','absence')",(params.get("start_date"),params.get("end_date")))}
     for request in rows(db,"SELECT employee_id,payload_json FROM employee_requests WHERE request_type='leave' AND status='approved'"):
         payload=loads(request["payload_json"],{});leave_date=payload.get("leave_date") or payload.get("start_date")
