@@ -4,6 +4,7 @@
   gap: 28px;
   max-width: 1480px;
 }
+.task-stage code{display:none}
 
 .workbench-history,
 .workbench-rail {
