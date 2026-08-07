@@ -32,7 +32,7 @@ class FlowStaffTests(unittest.TestCase):
         self.assertGreaterEqual(self.db.execute("SELECT COUNT(*) n FROM employee_skills").fetchone()["n"],20)
         self.assertEqual(self.db.execute("SELECT COUNT(*) n FROM rules").fetchone()["n"],6)
         self.assertEqual(self.db.execute("SELECT COUNT(*) n FROM shift_templates").fetchone()["n"],4)
-        self.assertEqual(self.db.execute("SELECT COUNT(*) n FROM shifts WHERE plan_id='plan-seed-august-1-6'").fetchone()["n"],32*6)
+        self.assertEqual(self.db.execute("SELECT COUNT(*) n FROM shifts WHERE plan_id='plan-seed-august-1-6'").fetchone()["n"],32*9)
         self.assertGreaterEqual(self.db.execute("SELECT COUNT(*) n FROM attendance WHERE event_type='leave'").fetchone()["n"],3)
         self.assertGreaterEqual(self.db.execute("SELECT COUNT(*) n FROM attendance WHERE event_type='overtime'").fetchone()["n"],6)
         self.assertEqual(self.db.execute("SELECT COUNT(*) n FROM (SELECT employee_id,event_date,COUNT(*) c FROM attendance WHERE event_date BETWEEN '2026-08-01' AND '2026-08-07' GROUP BY employee_id,event_date HAVING c>1)").fetchone()["n"],0)
@@ -43,6 +43,7 @@ class FlowStaffTests(unittest.TestCase):
             self.assertGreaterEqual(sum(item["start_at"][11:16]==item["end_at"][11:16] for item in shifts),1)
         leave_conflicts=self.db.execute("SELECT COUNT(*) n FROM attendance a JOIN shifts s ON s.employee_id=a.employee_id AND date(s.start_at)=a.event_date WHERE a.source='seeded_leave' AND s.plan_id='plan-seed-august-1-6' AND time(s.start_at)<>time(s.end_at)").fetchone()["n"]
         self.assertEqual(leave_conflicts,0)
+        self.assertEqual(self.db.execute("SELECT COUNT(*) n FROM attendance a JOIN shifts s ON s.employee_id=a.employee_id AND date(s.start_at)=a.event_date WHERE a.event_type IN ('leave','absence') AND s.plan_id='plan-seed-august-1-6' AND time(s.start_at)<>time(s.end_at)").fetchone()["n"],0)
         preferred_early=self.db.execute("SELECT COUNT(*) n FROM shifts WHERE plan_id='plan-seed-august-1-6' AND employee_id='emp-002' AND substr(start_at,12,5)='09:00'").fetchone()["n"]
         self.assertGreater(preferred_early,0)
         avoided_nights=self.db.execute("SELECT COUNT(*) n FROM shifts WHERE plan_id='plan-seed-august-1-6' AND employee_id='emp-003' AND time(start_at)='14:00:00'").fetchone()["n"]

@@ -146,9 +146,9 @@ def seed_demo_operations(db):
     employees=[dict(item) for item in db.execute("SELECT id,store_id,role,weekly_hour_limit,night_shift_limit,preferences_json FROM employees WHERE status='active' ORDER BY code")]
     if not employees:return
     schedule_version=db.execute("SELECT value FROM meta WHERE key='demo_schedule_version'").fetchone()
-    if not schedule_version or schedule_version["value"]!="5":
+    if not schedule_version or schedule_version["value"]!="7":
         db.execute("DELETE FROM shifts WHERE plan_id='plan-seed-august-1-6'");db.execute("DELETE FROM schedule_plans WHERE id='plan-seed-august-1-6'")
-        db.execute("INSERT INTO schedule_plans VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",("plan-seed-august-1-6",None,"8月1日至6日基础班表","seed","published",0,dumps({"coverage":100,"required":len(employees)*6,"assigned":len(employees)*6,"cost":0,"preference_rate":0,"risk_count":0}),dumps({"facts":["系统初始化的基础班表"],"tradeoffs":["用于演示班次、请假和加班数据"],"compliance":{"hard_conflicts":0,"rules_checked":6}}),"seed",now,now,now))
+        db.execute("INSERT INTO schedule_plans VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",("plan-seed-august-1-6",None,"8月1日至9日基础班表","seed","published",0,dumps({"coverage":100,"required":len(employees)*9,"assigned":len(employees)*9,"cost":0,"preference_rate":0,"risk_count":0}),dumps({"facts":["基于门店客流需求和班次模板生成"],"tradeoffs":["遵循周工时、单日一班、夜班上限和员工偏好"],"compliance":{"hard_conflicts":0,"rules_checked":6}}),"seed",now,now,now))
         rest_by_employee={};night_counts={employee["id"]:0 for employee in employees}
         for index,employee in enumerate(employees):
             preference=loads(employee["preferences_json"],{}).get("ai_summary","");employee["preference"]=preference;max_work_days=min(5,int(float(employee["weekly_hour_limit"])//8));rest_days=[]
@@ -156,14 +156,15 @@ def seed_demo_operations(db):
             if "周二休息" in preference:rest_days.append(4)
             if "周三" in preference and "不可用" in preference:rest_days.append(5)
             if "仅工作日" in preference:rest_days.extend([1,2])
-            for candidate in range(1,7):
-                if len(set(rest_days))>=6-max_work_days:break
+            for candidate in range(1,10):
+                if len(set(rest_days))>=9-max_work_days:break
                 if candidate not in rest_days:rest_days.append(candidate)
-            rest_by_employee[employee["id"]]=set(rest_days[:6-max_work_days])
+            rest_by_employee[employee["id"]]=set(rest_days[:9-max_work_days])
+        unavailable={(item["employee_id"],item["event_date"]) for item in db.execute("SELECT employee_id,event_date FROM attendance WHERE event_date BETWEEN '2026-08-01' AND '2026-08-09' AND event_type IN ('leave','absence')").fetchall()}
         stores=sorted({employee["store_id"] for employee in employees})
-        for day in range(1,7):
+        for day in range(1,10):
             for store_id in stores:
-                store_employees=[employee for employee in employees if employee["store_id"]==store_id];working=[employee for employee in store_employees if day not in rest_by_employee[employee["id"]]]
+                event_date=f"2026-08-{day:02d}";store_employees=[employee for employee in employees if employee["store_id"]==store_id];working=[employee for employee in store_employees if day not in rest_by_employee[employee["id"]] and (employee["id"],event_date) not in unavailable]
                 ratio=(.30,.40,.30) if day in (1,2) else (.40,.35,.25);raw=[len(working)*value for value in ratio];base,remainder=divmod(len(working),3);counts=[base,base,base]
                 for slot in sorted(range(3),key=lambda item:raw[item]-int(raw[item]),reverse=True)[:remainder]:counts[slot]+=1
                 slots=[template_index for template_index,count in enumerate(counts) for _ in range(count)];assigned_counts=[0,0,0]
@@ -181,7 +182,7 @@ def seed_demo_operations(db):
                     if employee in working:continue
                     template=templates[3]
                     db.execute("INSERT INTO shifts VALUES(?,?,?,?,?,?,?,?,?,?,?)",(f"shift-seed-{day:02d}-{employee['id']}","plan-seed-august-1-6",employee["id"],employee["store_id"],employee["role"],f"2026-08-{day:02d}T{template[3]}:00+00:00",f"2026-08-{day:02d}T{template[4]}:00+00:00","published",f"seed:{template[0]}",now,now))
-        db.execute("INSERT OR REPLACE INTO meta VALUES('demo_schedule_version','5')")
+        db.execute("INSERT OR REPLACE INTO meta VALUES('demo_schedule_version','7')")
     for index,employee in enumerate(employees[:6]):
         leave_date=f"2026-08-{index+1:02d}";db.execute("INSERT OR IGNORE INTO attendance VALUES(?,?,?,?,?,?,?,?,?)",(f"att-demo-leave-{employee['id']}",employee["id"],leave_date,"leave",f"{leave_date}T09:00:00+00:00",0,"seeded_leave",dumps({"leave_type":"年假","demo":True}),now))
     for index,employee in enumerate(employees[6:12]):
@@ -207,6 +208,8 @@ def seed_demo_operations(db):
         leave_dates=("2026-07-15","2026-07-22","2026-07-28")
         for index,event_date in enumerate(leave_dates):
             db.execute("INSERT OR REPLACE INTO attendance VALUES(?,?,?,?,?,?,?,?,?)",(f"att-fixture-emp-007-leave-{index}","emp-007",event_date,"leave",f"{event_date}T09:00:00+00:00",0,"seeded_hris",dumps({"verified":True,"demo_fixture":True,"leave_type":"年假"}),now))
+        for employee_id,event_date in (("emp-007","2026-08-02"),("emp-007","2026-08-04"),("emp-007","2026-08-06"),("emp-008","2026-08-04"),("emp-008","2026-08-05")):
+            db.execute("UPDATE shifts SET start_at=?,end_at=?,source=? WHERE plan_id='plan-seed-august-1-6' AND employee_id=? AND date(start_at)=?",(f"{event_date}T00:00:00+00:00",f"{event_date}T00:00:00+00:00","seed:shift-rest",employee_id,event_date))
         db.execute("INSERT OR REPLACE INTO meta VALUES('demo_attendance_version','3')")
 
 
@@ -275,7 +278,7 @@ def seed(db):
         ("anom-3","emp-007","store-b","leave_increase","low",.72,["近28天请假3次"],"班表稳定性需关注",["个人安排变化，需人工核实"],["采用非惩罚性沟通确认可用时间"],"acknowledged"),
     ]
     db.executemany("INSERT INTO anomaly_events VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",[(x[0],x[1],x[2],x[3],x[4],x[5],dumps(x[6]),x[7],dumps(x[8]),dumps(x[9]),x[10],now,now) for x in anomalies])
-    demands=[("demand-1","2026-08-06","09:00","17:00","收银员",2,.88,["工作日基线","午间客流"]),("demand-2","2026-08-06","10:00","18:00","导购",2,.84,["新品活动"]),("demand-3","2026-08-07","09:00","17:00","收银员",3,.91,["周五晚高峰"]),("demand-4","2026-08-08","10:00","19:00","导购",3,.86,["周末","商圈活动"]),("demand-5","2026-08-08","08:00","16:00","理货员",2,.9,["周末补货"])]
+    demands=[("demand-1","2026-08-06","09:00","17:00","收银员",2,.88,["工作日基线","午间客流"]),("demand-2","2026-08-06","10:00","18:00","导购",2,.84,["新品活动"]),("demand-3","2026-08-07","09:00","17:00","收银员",3,.91,["周五晚高峰"]),("demand-4","2026-08-08","10:00","19:00","导购",3,.86,["周末","商圈活动"]),("demand-5","2026-08-08","08:00","16:00","理货员",2,.9,["周末补货"]),("demand-6","2026-08-09","12:00","20:00","导购",3,.87,["周日午后客流"]),("demand-7","2026-08-09","09:00","17:00","收银员",2,.9,["周日基础覆盖"])]
     db.executemany("INSERT INTO business_demands VALUES(?,?,?,?,?,?,?,?,?,?,?)",[(x[0],"store-a",x[1],x[2],x[3],x[4],x[5],x[6],dumps(x[7]),"forecast_seed",now) for x in demands])
     for rule in rules:
         content=f"{rule[1]}。{rule[2]}。范围：{rule[3]}，强度：{rule[4]}，业务域：{rule[5]}。"
