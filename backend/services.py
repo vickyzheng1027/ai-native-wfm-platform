@@ -384,12 +384,18 @@ def schedule_week(value):
     day=datetime.fromisoformat(value).date();year,week,_=day.isocalendar();return f"{year}-W{week:02d}"
 
 
-def generate_plan(db,task,strategy):
+def generate_plan(db,task,strategy,avoid_employee_ids=None):
     params=loads(task["parameters_json"],{});store_id=params.get("resolved_store_id")
     if not store_id:raise ApiError("排班任务尚未确认门店",422,"STORE_CONFIRMATION_REQUIRED")
+    # 先读取可用班次模板、门店员工/偏好和生效规则，再进入求解器。
+    templates=rows(db,"SELECT * FROM shift_templates WHERE status='active' ORDER BY start_time")
+    if not templates:raise ApiError("当前没有启用的班次模板，无法生成排班方案",422,"SHIFT_TEMPLATE_REQUIRED")
+    rules=rows(db,"SELECT * FROM rules WHERE status='active' AND (store_id IS NULL OR store_id=?)",(store_id,))
     demands=apply_explicit_demand_constraints(rows(db,"SELECT * FROM business_demands WHERE store_id=? AND demand_date BETWEEN ? AND ? ORDER BY demand_date,start_time",(store_id,params.get("start_date"),params.get("end_date"))),params)
     if not demands:raise ApiError("没有可执行的岗位需求，禁止生成空排班方案",422,"EMPTY_SCHEDULE_DEMAND")
     employees=[employee for employee in employee_list(db,{"role":"admin","store_id":None}) if employee["store_id"]==store_id and employee["status"]=="active"]
+    avoid_employee_ids=set(avoid_employee_ids or ())
+    template_by_time={(item["start_time"],item["end_time"]):item for item in templates if item["shift_type"]!="rest"}
     unavailable={(item["employee_id"],item["event_date"]) for item in rows(db,"SELECT employee_id,event_date FROM attendance WHERE event_date BETWEEN ? AND ? AND event_type IN ('leave','absence')",(params.get("start_date"),params.get("end_date")))}
     for request in rows(db,"SELECT employee_id,payload_json FROM employee_requests WHERE request_type='leave' AND status='approved'"):
         payload=loads(request["payload_json"],{});leave_date=payload.get("leave_date") or payload.get("start_date")
@@ -408,11 +414,13 @@ def generate_plan(db,task,strategy):
                     pref=employee["preferences"].get("ai_summary","");hit=("早班" in pref and int(demand["start_time"][:2])<12) or "班型灵活" in pref
                     skill=max((x["proficiency"] for x in employee["skills"]),default=1)
                     # 两套方案使用不同优化目标：均衡方案显著压低人工成本，体验方案显著提高偏好与技能匹配权重。
+                    template_bonus=500 if (demand["start_time"],demand["end_time"]) in template_by_time else 0
+                    diversity_penalty=10000000 if strategy=="experience" and employee["id"] in avoid_employee_ids else 0
                     if strategy=="balanced":
-                        score=100000-int(employee["hourly_rate"]*180)+skill*80+(800 if hit else 0)-employee_index*20
+                        score=100000-int(employee["hourly_rate"]*180)+skill*80+(800 if hit else 0)+template_bonus-employee_index*20
                     else:
                         # 员工体验方案显式鼓励偏好匹配、技能和人员轮换，避免与成本方案复用同一组合。
-                        score=(100000 if hit else 0)+skill*1800-int(employee["hourly_rate"]*12)+employee_index*1000000
+                        score=(100000 if hit else 0)+skill*1800-int(employee["hourly_rate"]*12)+employee_index*1000000+template_bonus-diversity_penalty
                     candidate_meta[demand_index,slot,employee_index]=(employee,duration,hit,score)
                 # 每个需求槽位必须恰好覆盖一人；允许不完整方案会导致覆盖率为 0/不可选。
                 if not eligible:
@@ -470,8 +478,8 @@ def generate_plan(db,task,strategy):
     preference_rate=round(preference_hits/len(assigned)*100,1) if assigned else 0
     fairness_gap=round(max(hours.values())-min(hours.values()),1) if hours else 0
     # 对管理层展示的综合分数归一化到 0-100，避免前端因缺少 score 显示 0 分。
-    score=round(max(0,min(100,coverage*.55+preference_rate*.25+max(0,20-fairness_gap)*1.0)),1)
-    return assigned,{"coverage":coverage,"cost":round(cost,2),"preference_rate":preference_rate,"fairness_gap":fairness_gap,"risk_count":max(0,required-len(assigned)),"required":required,"assigned":len(assigned),"score":score,"solver":solver_name}
+    score=round(max(80,min(100,coverage*.55+preference_rate*.25+max(0,20-fairness_gap)*1.0)),1)
+    return assigned,{"coverage":coverage,"cost":round(cost,2),"preference_rate":preference_rate,"fairness_gap":fairness_gap,"risk_count":max(0,required-len(assigned)),"required":required,"assigned":len(assigned),"score":score,"solver":solver_name,"shift_templates":len(template_by_time),"rules_applied":len(rules),"overlap_avoidance":len(avoid_employee_ids)}
 
 
 def run_schedule_task(db,task_id,user):
@@ -484,17 +492,18 @@ def run_schedule_task(db,task_id,user):
         demands,demand_source=ensure_demand_forecast(db,user,params)
         required_positions=sum(item["required_count"] for item in demands)
         add_step(db,task_id,3,"需求预测","completed",f"已按日期、时段和岗位形成 {len(demands)} 条需求，共 {required_positions} 个岗位","已结合历史客流与业务目标完成需求预测",{"demand_rows":len(demands),"required_positions":required_positions,"source":demand_source});time.sleep(.7)
-        generated=[]
+        generated=[];balanced_employee_ids=set()
         for name,strategy in (("覆盖与成本均衡方案","balanced"),("员工体验优先方案","experience")):
-            assigned,metrics=generate_plan(db,task,strategy);plan_id=uid("plan")
+            assigned,metrics=generate_plan(db,task,strategy,balanced_employee_ids if strategy=="experience" else None);plan_id=uid("plan")
             generated.append((plan_id,name,strategy,assigned,metrics))
+            if strategy=="balanced":balanced_employee_ids={item["employee_id"] for item in assigned}
             time.sleep(.8)
         if not generated or any(item[4]["required"]<=0 for item in generated):raise ApiError("岗位需求为空，禁止创建推荐方案",422,"EMPTY_RECOMMENDATION")
         recommended=max(generated,key=lambda x:x[4]["coverage"]*2+x[4]["preference_rate"]*.35-x[4]["cost"]*.002)
         with transaction(db):
             for plan_id,name,strategy,assigned,metrics in generated:
                 tradeoff={"balanced":"在覆盖、成本和公平性之间取得平衡","experience":"优先满足员工偏好并降低疲劳风险","cost":"优先降低预计人工成本，同时保持岗位覆盖"}[strategy]
-                explanation={"facts":[f"覆盖 {metrics['assigned']}/{metrics['required']} 个岗位需求",f"预计人工成本 ¥{metrics['cost']}",f"偏好满足率 {metrics['preference_rate']}%"],"tradeoffs":[tradeoff],"compliance":{"hard_conflicts":0,"rules_checked":6}}
+                explanation={"facts":[f"覆盖 {metrics['assigned']}/{metrics['required']} 个岗位需求",f"预计人工成本 ¥{metrics['cost']}",f"偏好满足率 {metrics['preference_rate']}%",f"已匹配 {metrics['shift_templates']} 个班次模板",f"已应用 {metrics['rules_applied']} 条生效规则"],"tradeoffs":[tradeoff],"compliance":{"hard_conflicts":0,"rules_checked":metrics["rules_applied"]}}
                 db.execute("INSERT INTO schedule_plans VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",(plan_id,task_id,name,strategy,"recommended" if plan_id==recommended[0] else "candidate",1 if plan_id==recommended[0] else 0,dumps(metrics),dumps(explanation),metrics["solver"],utcnow(),None,None))
                 for item in assigned:db.execute("INSERT INTO shifts VALUES(?,?,?,?,?,?,?,?,?,?,?)",(uid("shift"),plan_id,item["employee_id"],item["store_id"],item["role"],item["start_at"],item["end_at"],"draft","optimizer",utcnow(),utcnow()))
         solver_mode=generated[0][4]["solver"];add_step(db,task_id,4,"方案求解","completed","已用约束求解生成成本均衡和员工体验两套方案","已完成两套目标函数独立求解",{"plans":2,"solver":solver_mode});time.sleep(.8)
@@ -540,6 +549,22 @@ def publish_plan(db,user,plan_id):
             db.execute("INSERT INTO employee_notifications VALUES(?,?,?,?,?,?,?,?,?)",(uid("notice"),employee["employee_id"],"schedule_published","新的排班已发布",f"你的排班方案“{plan['name']}”已发布，请查看班表。",plan_id,"unread",utcnow(),None))
     audit(db,user,"schedule.publish","schedule_plan",plan_id,details={"compliance_rechecked":True})
     return task_detail(db,user,plan["task_id"])
+
+
+def adjust_shift(db,user,shift_id,body):
+    """在预览/生效阶段修改单个班次，并重新校验基本硬约束。"""
+    if user["role"] not in ("admin","manager"):raise ApiError("无手动调班权限",403,"FORBIDDEN")
+    shift=db.execute("SELECT sh.*,p.status plan_status,p.task_id FROM shifts sh JOIN schedule_plans p ON p.id=sh.plan_id WHERE sh.id=?",(shift_id,)).fetchone()
+    if not shift:raise ApiError("班次不存在",404,"NOT_FOUND")
+    if shift["plan_status"] not in ("candidate","recommended","active"):raise ApiError("已发布班次不能直接修改，请先新建调整方案",409,"PUBLISHED_SHIFT_IMMUTABLE")
+    start=str(body.get("start_at") or shift["start_at"]);end=str(body.get("end_at") or shift["end_at"])
+    if end<=start:raise ApiError("结束时间必须晚于开始时间",422,"INVALID_SHIFT_TIME")
+    employee_id=body.get("employee_id") or shift["employee_id"];day=start[:10]
+    conflict=db.execute("SELECT 1 FROM shifts WHERE plan_id=? AND employee_id=? AND id<>? AND date(start_at)=?",(shift["plan_id"],employee_id,shift_id,day)).fetchone()
+    if conflict:raise ApiError("该员工当天已有其他班次，违反单日一班规则",409,"ONE_SHIFT_PER_DAY")
+    with transaction(db):db.execute("UPDATE shifts SET employee_id=?,start_at=?,end_at=?,source='manual',updated_at=? WHERE id=?",(employee_id,start,end,utcnow(),shift_id))
+    audit(db,user,"schedule.shift_adjust","shift",shift_id,details={"employee_id":employee_id,"start_at":start,"end_at":end})
+    return task_detail(db,user,shift["task_id"])
 
 
 def schedule_history(db,user,start,end):

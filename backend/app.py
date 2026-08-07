@@ -18,11 +18,11 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).parents[1]))
     from backend.ai import AIClient, rag_answer
     from backend.db import connect, rowdict, utcnow, verify_password
-    from backend.services import ApiError, activate_plan, anomalies, approve_rule, attendance_overview, audit, automation_event, backup_database, business_month_period, confirm_employee_request, confirm_schedule_task, create_rule, create_task, decide_employee_request, employee_agent, employee_insights, employee_list, overview, period_review, publish_plan, rule_list, save_employee, save_shift_template, schedule_history, schedule_workspace, shift_template_list, task_detail, update_anomaly, update_rule
+    from backend.services import ApiError, activate_plan, adjust_shift, anomalies, approve_rule, attendance_overview, audit, automation_event, backup_database, business_month_period, confirm_employee_request, confirm_schedule_task, create_rule, create_task, decide_employee_request, employee_agent, employee_insights, employee_list, overview, period_review, publish_plan, rule_list, save_employee, save_shift_template, schedule_history, schedule_workspace, shift_template_list, task_detail, update_anomaly, update_rule
 else:
     from .ai import AIClient, rag_answer
     from .db import connect, rowdict, utcnow, verify_password
-    from .services import ApiError, activate_plan, anomalies, approve_rule, attendance_overview, audit, automation_event, backup_database, business_month_period, confirm_employee_request, confirm_schedule_task, create_rule, create_task, decide_employee_request, employee_agent, employee_insights, employee_list, overview, period_review, publish_plan, rule_list, save_employee, save_shift_template, schedule_history, schedule_workspace, shift_template_list, task_detail, update_anomaly, update_rule
+    from .services import ApiError, activate_plan, adjust_shift, anomalies, approve_rule, attendance_overview, audit, automation_event, backup_database, business_month_period, confirm_employee_request, confirm_schedule_task, create_rule, create_task, decide_employee_request, employee_agent, employee_insights, employee_list, overview, period_review, publish_plan, rule_list, save_employee, save_shift_template, schedule_history, schedule_workspace, shift_template_list, task_detail, update_anomaly, update_rule
 
 ROOT=Path(__file__).parents[1];PUBLIC=ROOT/"public"
 print(f"[startup] Python {sys.version.split()[0]}，开始初始化 SQLite",flush=True)
@@ -113,6 +113,8 @@ class Handler(BaseHTTPRequestHandler):
         if method=="POST" and match:return 200,{"ok":True,"data":activate_plan(DB,user,match["id"])}
         match=self.match(path,"/api/schedules/{id}/publish")
         if method=="POST" and match:return 200,{"ok":True,"data":publish_plan(DB,user,match["id"])}
+        match=self.match(path,"/api/schedule-shifts/{id}")
+        if method=="PUT" and match:return 200,{"ok":True,"data":adjust_shift(DB,user,match["id"],self.body())}
         if method=="GET" and path=="/api/organization/employees":return 200,{"ok":True,"data":employee_list(DB,user)}
         if method=="GET" and path=="/api/shift-templates":return 200,{"ok":True,"data":shift_template_list(DB)}
         if method=="POST" and path=="/api/shift-templates":return 201,{"ok":True,"data":save_shift_template(DB,user,self.body())}
