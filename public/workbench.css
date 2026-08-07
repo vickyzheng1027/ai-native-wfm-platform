@@ -271,6 +271,7 @@
 .attendance-empty { color: #94a3b8; }
 .schedule-rest { background: #f1f5f9; color: #64748b; text-align: center; }
 .schedule-rest span { display: inline-block; padding: 7px 10px; border-radius: 5px; background: #e2e8f0; color: #64748b; font-size: 11px; }
+.schedule-empty { background: #fff; }
 .attendance-filter label { display: grid; gap: 6px; color: #475569; font-size: 12px; font-weight: 650; }
 @media (max-width: 760px) { .attendance-filter { grid-template-columns: 1fr 1fr; } }
 
