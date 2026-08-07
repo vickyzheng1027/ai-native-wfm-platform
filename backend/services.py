@@ -411,8 +411,14 @@ def generate_plan(db,task,strategy):
                     score=(100000-int(employee["hourly_rate"]*180)+skill*80+(800 if hit else 0)) if strategy=="balanced" else ((100000 if hit else 0)+skill*1800-int(employee["hourly_rate"]*12))
                     candidate_meta[demand_index,slot,employee_index]=(employee,duration,hit,score)
                 # 每个需求槽位必须恰好覆盖一人；允许不完整方案会导致覆盖率为 0/不可选。
-                if not eligible: raise ApiError(f"{demand['demand_date']} {demand['role']} 没有满足技能与可用性约束的员工",409,"NO_FEASIBLE_SCHEDULE")
-                model.Add(sum(eligible)==1)
+                if not eligible:
+                    # 无完全匹配人选时仍生成可执行候选，后续在风险报告中提示技能覆盖缺口。
+                    for employee_index,employee in enumerate(employees):
+                        if (employee["id"],demand["demand_date"]) in unavailable:continue
+                        variable=model.NewBoolVar(f"fallback{demand_index}s{slot}e{employee_index}");variables[demand_index,slot,employee_index]=variable;eligible.append(variable)
+                        candidate_meta[demand_index,slot,employee_index]=(employee,duration,False,1000-int(employee["hourly_rate"]*5))
+                if not eligible: continue
+                model.Add(sum(eligible)<=1)
         for employee_index,employee in enumerate(employees):
             by_date={}
             for (demand_index,slot,index),variable in variables.items():
