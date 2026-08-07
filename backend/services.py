@@ -586,10 +586,45 @@ def confirm_employee_request(db,user,request_id,updates=None):
     return {**rowdict(db.execute("SELECT * FROM employee_requests WHERE id=?",(request_id,)).fetchone()),"status":"pending_manager"}
 
 
+def refresh_attendance_anomalies(db):
+    latest=db.execute("SELECT MAX(event_date) latest FROM attendance").fetchone()["latest"]
+    if not latest:return set()
+    reference=date.fromisoformat(latest);recent7=(reference-timedelta(days=6)).isoformat();recent28=(reference-timedelta(days=27)).isoformat();previous28_start=(reference-timedelta(days=55)).isoformat();previous28_end=(reference-timedelta(days=28)).isoformat()
+    detected={}
+    employees=rows(db,"SELECT id,store_id FROM employees WHERE status='active'")
+    for employee in employees:
+        records=rows(db,"SELECT * FROM attendance WHERE employee_id=? AND event_date BETWEEN ? AND ? ORDER BY event_date",(employee["id"],previous28_start,latest))
+        week=[item for item in records if item["event_date"]>=recent7]
+        late=[item for item in week if item["event_type"]=="late"]
+        late_minutes=sum(int(loads(item["metadata_json"],{}).get("late_minutes") or item["event_time"][14:16] or 0) for item in late)
+        if len(late)>=3 or late_minutes>=30:
+            detected[(employee["id"],"repeated_late")]={"risk":"high" if len(late)>=4 or late_minutes>=45 else "medium","confidence":min(.98,.72+len(late)*.05+late_minutes/500),"evidence":[f"近7天迟到{len(late)}次",f"累计迟到{late_minutes}分钟"],"impact":"可能影响开店准备、交接和高峰时段岗位覆盖","causes":["通勤或个人安排可能发生变化，需与员工核实","当前班次与员工可用时间可能不匹配"],"suggestions":["先与员工进行非惩罚性沟通","核实后评估班次调整或到岗提醒"]}
+        overtime=[item for item in week if item["event_type"]=="overtime"]
+        overtime_hours=round(sum(float(item["hours"] or 0) for item in overtime),1);overtime_dates={item["event_date"] for item in overtime};streak=0;max_streak=0
+        for offset in range(7):
+            day=(reference-timedelta(days=6-offset)).isoformat();streak=streak+1 if day in overtime_dates else 0;max_streak=max(max_streak,streak)
+        if max_streak>=3 or overtime_hours>=8:
+            detected[(employee["id"],"continuous_overtime")]={"risk":"high" if max_streak>=4 or overtime_hours>=12 else "medium","confidence":min(.98,.76+max_streak*.04+overtime_hours/200),"evidence":[f"连续加班最长{max_streak}天",f"近7天加班{overtime_hours}小时"],"impact":"持续加班可能增加疲劳和出勤波动风险","causes":["业务高峰或临时缺员可能增加了工时，需结合排班核实","关键技能可能集中在少数员工"],"suggestions":["检查后续班次和最小休息间隔","评估增加替补或分散技能覆盖"]}
+        recent_leave=sum(item["event_type"]=="leave" and item["event_date"]>=recent28 for item in records);previous_leave=sum(item["event_type"]=="leave" and previous28_start<=item["event_date"]<=previous28_end for item in records)
+        if recent_leave>=3 and recent_leave>=max(2,previous_leave*2):
+            detected[(employee["id"],"leave_increase")]={"risk":"low","confidence":min(.9,.62+recent_leave*.05),"evidence":[f"近28天请假{recent_leave}次",f"前一周期请假{previous_leave}次"],"impact":"班表稳定性可能需要额外关注","causes":["请假变化涉及员工隐私，具体原因必须由员工自愿说明"],"suggestions":["仅核实后续可用时间，不推断健康或家庭状况","必要时准备替补覆盖"]}
+    now=utcnow()
+    with transaction(db):
+        for (employee_id,anomaly_type),value in detected.items():
+            anomaly_id=f"derived-{anomaly_type}-{employee_id}";existing=db.execute("SELECT status,created_at FROM anomaly_events WHERE id=?",(anomaly_id,)).fetchone();status=existing["status"] if existing else "open";created_at=existing["created_at"] if existing else now;store_id=next(item["store_id"] for item in employees if item["id"]==employee_id)
+            db.execute("INSERT OR REPLACE INTO anomaly_events VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",(anomaly_id,employee_id,store_id,anomaly_type,value["risk"],value["confidence"],dumps(value["evidence"]),value["impact"],dumps(value["causes"]),dumps(value["suggestions"]),status,created_at,now))
+    return {f"derived-{anomaly_type}-{employee_id}" for employee_id,anomaly_type in detected}
+
+
 def anomalies(db,user):
+    detected_ids=refresh_attendance_anomalies(db)
     sql="SELECT a.*,e.name employee_name,e.code employee_code FROM anomaly_events a JOIN employees e ON e.id=a.employee_id";args=[]
-    if user["role"]=="employee":sql+=" WHERE a.employee_id=?";args=[user["employee_id"]]
-    elif user.get("store_id"):sql+=" WHERE a.store_id=?";args=[user["store_id"]]
+    filters=[]
+    if detected_ids:filters.append(f"a.id IN ({','.join('?' for _ in detected_ids)})");args.extend(sorted(detected_ids))
+    else:filters.append("0")
+    if user["role"]=="employee":filters.append("a.employee_id=?");args.append(user["employee_id"])
+    elif user.get("store_id"):filters.append("a.store_id=?");args.append(user["store_id"])
+    sql+=" WHERE "+" AND ".join(filters)
     result=[]
     for item in rows(db,sql+" ORDER BY CASE risk_level WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,created_at DESC",args):
         for field in ("evidence_json","possible_causes_json","suggestions_json"):item[field[:-5]]=loads(item.pop(field),[])

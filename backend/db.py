@@ -235,7 +235,12 @@ def seed(db):
         for idx,employee in enumerate(employees[:9]):
             state=states[(day+idx)%len(states)]
             hours=2 if state=="overtime" else 0
-            attendance.append((f"att-{day}-{idx}",employee[0],f"2026-08-{day:02d}",state,f"2026-08-{day:02d}T09:{(idx*3)%20:02d}:00+00:00",hours,"seeded_hris",dumps({"verified":True}),now))
+            metadata={"verified":True}
+            if employee[0]=="emp-003" and day<=4:state,hours="overtime",3
+            if employee[0]=="emp-004" and day in (1,3,5):state,metadata="late",{"verified":True,"late_minutes":12+day}
+            if employee[0]=="emp-007" and day in (2,4,6):state="leave"
+            minute=metadata.get("late_minutes",(idx*3)%20) if state=="late" else (idx*3)%20
+            attendance.append((f"att-{day}-{idx}",employee[0],f"2026-08-{day:02d}",state,f"2026-08-{day:02d}T09:{minute:02d}:00+00:00",hours,"seeded_hris",dumps(metadata),now))
     db.executemany("INSERT INTO attendance VALUES(?,?,?,?,?,?,?,?,?)",attendance)
     leave_types=[("年假",10,3,1),("病假",8,1,0),("事假",5,1,0),("调休",12,4,2)]
     db.executemany("INSERT INTO leave_balances VALUES(?,?,?,?,?,?,?)",[(f"lb-{e[0]}-{i}",e[0],2026,t,*v) for e in employees for i,(t,*v) in enumerate(leave_types)])

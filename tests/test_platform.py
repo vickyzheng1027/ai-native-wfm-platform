@@ -391,10 +391,20 @@ class FlowStaffTests(unittest.TestCase):
         self.assertEqual(self.db.execute("SELECT COUNT(*) n FROM employee_preferences WHERE employee_id=?",(self.employee["employee_id"],)).fetchone()["n"],1)
 
     def test_anomaly_displays_separate_evidence_causes_and_suggestions(self):
-        event=anomalies(self.db,self.manager)[0]
+        events=anomalies(self.db,self.manager)
+        self.assertTrue(all(event["id"].startswith("derived-") for event in events))
+        event=events[0]
         self.assertTrue(event["evidence"])
         self.assertTrue(event["possible_causes"])
         self.assertTrue(event["suggestions"])
+
+    def test_anomalies_are_recomputed_from_attendance(self):
+        events=anomalies(self.db,self.manager)
+        overtime=next(event for event in events if event["anomaly_type"]=="continuous_overtime")
+        self.assertIn("近7天加班12.0小时",overtime["evidence"])
+        self.db.execute("DELETE FROM attendance WHERE employee_id='emp-003' AND event_type='overtime'")
+        self.db.commit()
+        self.assertFalse(any(event["employee_id"]=="emp-003" and event["anomaly_type"]=="continuous_overtime" for event in anomalies(self.db,self.manager)))
 
     def test_anomaly_action_requires_note_and_is_audited(self):
         event=anomalies(self.db,self.manager)[0]
