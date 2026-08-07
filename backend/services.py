@@ -407,7 +407,9 @@ def generate_plan(db,task,strategy):
                     pref=employee["preferences"].get("ai_summary","");hit=("早班" in pref and int(demand["start_time"][:2])<12) or "班型灵活" in pref
                     skill=max((x["proficiency"] for x in employee["skills"]),default=1);score=10000+skill*100-int(employee["hourly_rate"]*(18 if strategy=="balanced" else 7))+((250 if strategy=="experience" else 70) if hit else 0)
                     candidate_meta[demand_index,slot,employee_index]=(employee,duration,hit,score)
-                if eligible:model.Add(sum(eligible)<=1)
+                # 每个需求槽位必须恰好覆盖一人；允许不完整方案会导致覆盖率为 0/不可选。
+                if not eligible: raise ApiError(f"{demand['demand_date']} {demand['role']} 没有满足技能与可用性约束的员工",409,"NO_FEASIBLE_SCHEDULE")
+                model.Add(sum(eligible)==1)
         for employee_index,employee in enumerate(employees):
             by_date={}
             for (demand_index,slot,index),variable in variables.items():
@@ -451,7 +453,11 @@ def generate_plan(db,task,strategy):
     if not assigned:raise ApiError("当前门店没有可满足岗位技能与可用性要求的员工，未生成空方案",409,"NO_ASSIGNABLE_EMPLOYEES")
     cost=sum((datetime.fromisoformat(x["end_at"])-datetime.fromisoformat(x["start_at"])).seconds/3600*next(e["hourly_rate"] for e in employees if e["id"]==x["employee_id"]) for x in assigned)
     coverage=round(len(assigned)/required*100,1) if required else 0
-    return assigned,{"coverage":coverage,"cost":round(cost,2),"preference_rate":round(preference_hits/len(assigned)*100,1) if assigned else 0,"fairness_gap":round(max(hours.values())-min(hours.values()),1) if hours else 0,"risk_count":max(0,required-len(assigned)),"required":required,"assigned":len(assigned),"solver":solver_name}
+    preference_rate=round(preference_hits/len(assigned)*100,1) if assigned else 0
+    fairness_gap=round(max(hours.values())-min(hours.values()),1) if hours else 0
+    # 对管理层展示的综合分数归一化到 0-100，避免前端因缺少 score 显示 0 分。
+    score=round(max(0,min(100,coverage*.55+preference_rate*.25+max(0,20-fairness_gap)*1.0)),1)
+    return assigned,{"coverage":coverage,"cost":round(cost,2),"preference_rate":preference_rate,"fairness_gap":fairness_gap,"risk_count":max(0,required-len(assigned)),"required":required,"assigned":len(assigned),"score":score,"solver":solver_name}
 
 
 def run_schedule_task(db,task_id,user):
